@@ -79,6 +79,11 @@ class App:
             try:
                 snapshot = await asyncio.to_thread(self._fetch_depth_snapshot)
                 async with self.state_lock:
+                    self.logger.info(
+                        "Snapshot fetched | lastUpdateId=%s buffer_len=%d",
+                        snapshot.get("lastUpdateId"),
+                        len(self.depth_buffer),
+                    )
                     if self._try_sync_from_snapshot(snapshot):
                         self.logger.info("Orderbook synchronized at updateId=%d", self.last_update_id)
                         return
@@ -96,7 +101,8 @@ class App:
 
     def _try_sync_from_snapshot(self, snapshot: dict) -> bool:
         last_update_id = int(snapshot["lastUpdateId"])
-        buffered = [event for event in self.depth_buffer if int(event.get("u", 0)) >= last_update_id]
+        target = last_update_id + 1
+        buffered = [event for event in self.depth_buffer if int(event.get("u", 0)) >= target]
         if not buffered:
             return False
 
@@ -104,11 +110,25 @@ class App:
         for idx, event in enumerate(buffered):
             first_u = int(event.get("U", 0))
             final_u = int(event.get("u", 0))
-            if first_u <= last_update_id <= final_u:
+            if first_u <= target <= final_u:
                 first_idx = idx
                 break
 
         if first_idx < 0:
+            sample = buffered[:20]
+            min_u = min((int(event.get("U", 0)) for event in sample), default=None)
+            max_u = max((int(event.get("U", 0)) for event in sample), default=None)
+            min_final = min((int(event.get("u", 0)) for event in sample), default=None)
+            max_final = max((int(event.get("u", 0)) for event in sample), default=None)
+            self.logger.warning(
+                "Snapshot sync failed: no covering event for target=%d in buffer_len=%d (sample U=[%s..%s], u=[%s..%s])",
+                target,
+                len(buffered),
+                min_u,
+                max_u,
+                min_final,
+                max_final,
+            )
             return False
 
         self.orderbook.load_snapshot(snapshot.get("bids", []), snapshot.get("asks", []))
@@ -162,13 +182,14 @@ class App:
             best_bid = self.last_state.bids[0][0] if self.last_state.bids else None
             best_ask = self.last_state.asks[0][0] if self.last_state.asks else None
             self.logger.info(
-                "heartbeat | synced=%s best_bid=%s best_ask=%s imbalance=%.4f spread_bps=%.2f wall_candidates=%d",
+                "heartbeat | synced=%s best_bid=%s best_ask=%s imbalance=%.4f spread_bps=%.2f wall_candidates=%d buffer_len=%d",
                 self.synced,
                 f"{best_bid:.2f}" if best_bid is not None else "n/a",
                 f"{best_ask:.2f}" if best_ask is not None else "n/a",
                 self.last_imbalance,
                 self.last_spread_bps,
                 self.wall_candidates,
+                len(self.depth_buffer),
             )
 
     def _log_signal(self, event: SignalEvent) -> None:
