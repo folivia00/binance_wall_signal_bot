@@ -1,42 +1,27 @@
 # binance_wall_signal_bot
 
-Минимальный Python-бот для Binance USDT-M Futures, который отслеживает изменения стакана (`btcusdt@depth@100ms`) и выдаёт сигналы разворота по логике исчезновения крупных стен.
+Python-бот для Binance USDT-M Futures, который поддерживает **корректный локальный стакан** (`snapshot + diff updates`) и выдаёт более строгие сигналы по исчезновению крупных стен.
 
 ## Что делает
 
-- Подключается к публичному Binance Futures WebSocket (`fstream`).
-- Поддерживает мультистрим формат сообщений `{"stream": "...", "data": {...}}`.
-- Ведёт локальный топ-стакан по `bids/asks`.
-- Ищет стены среди top-N уровней:
-  - `qty >= WALL_MULT * median_qty`.
-- Ловит событие `wall_drop`, если стена быстро исчезла/сильно уменьшилась:
-  - возраст стены `<= EVENT_TTL_SEC`;
-  - падение объёма `>= WALL_DROP_PCT` (или уровень пропал из top-N).
-- Подтверждает сигнал дисбалансом:
-  - `abs(imbalance) >= IMB_THR`,
-  - `imbalance = (sum(bids)-sum(asks))/(sum(bids)+sum(asks))`.
-- Направление сигнала:
-  - `ask wall drop -> LONG`
-  - `bid wall drop -> SHORT`
-- Считает score:
-  - `score = min(100, int(50 + abs(imbalance)*200))`
-- Печатает heartbeat раз в 2 секунды (`best bid/ask + imbalance`).
-- Пишет всё в `logs/signals.log`.
-
-## Структура
-
-```
-binance_wall_signal_bot/
-  src/
-    main.py
-    config.py
-    ws_client.py
-    orderbook.py
-    wall_detector.py
-    logger.py
-  requirements.txt
-  README.md
-```
+- Подключается к `btcusdt@depth@100ms` (Binance Futures diff depth).
+- Перед обработкой сигналов синхронизирует локальный стакан по официальной схеме:
+  - буферизует WS события;
+  - берёт REST snapshot (`/fapi/v1/depth?limit=1000`);
+  - отбрасывает события с `u < lastUpdateId`;
+  - стартует применение с первого события, где `U <= lastUpdateId <= u`;
+  - дальше применяет дифы строго по цепочке update id (`pu`/`U`/`u`), при разрыве запускает ресинк.
+- Ищет стены только в top-N уровнях (`N_LEVELS=100`) и фильтрует:
+  - `qty >= max(MIN_WALL_QTY, WALL_MULT * median_qty)`;
+  - расстояние до mid не больше `MAX_WALL_DIST_BPS`.
+- Генерирует `wall_drop` если объём на **той же цене** в полном локальном стакане упал на `>= WALL_DROP_PCT` в пределах `EVENT_TTL_SEC`.
+- Подтверждает направление imbalance:
+  - `ask wall drop -> LONG`, только если `imbalance >= IMB_THR`;
+  - `bid wall drop -> SHORT`, только если `imbalance <= -IMB_THR`.
+- Включает anti-spam:
+  - cooldown `SIGNAL_COOLDOWN_SEC` отдельно для LONG/SHORT;
+  - максимум 1 сигнал на сторону за тик.
+- Пишет heartbeat каждые 2 секунды: `best_bid/best_ask`, `imbalance`, `spread_bps`, число wall-кандидатов.
 
 ## Запуск
 
@@ -51,18 +36,20 @@ python -m src.main
 
 ## Конфигурация
 
-Все основные параметры вынесены в `src/config.py`:
+Параметры находятся в `src/config.py`:
 
-- `N_LEVELS = 20`
+- `N_LEVELS = 100`
 - `WALL_MULT = 5.0`
+- `MIN_WALL_QTY = 1.0`
+- `MAX_WALL_DIST_BPS = 15.0`
 - `EVENT_TTL_SEC = 2.0`
 - `WALL_DROP_PCT = 0.70`
 - `IMB_THR = 0.12`
+- `SIGNAL_COOLDOWN_SEC = 2.0`
 - `HEARTBEAT_INTERVAL_SEC = 2.0`
-
-`aggTrade` поток заложен архитектурно и может быть включён через `ENABLE_AGG_TRADE = True`.
 
 ## Примечания
 
-- Боту не нужны API-ключи (только публичные market stream).
-- Реализован реконнект с экспоненциальной задержкой при обрыве соединения.
+- API-ключи не нужны (только публичный market data stream).
+- Реализован реконнект с экспоненциальной задержкой.
+- При любом рассинхроне update id запускается пересборка локального стакана.

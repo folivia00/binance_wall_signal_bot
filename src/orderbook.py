@@ -16,6 +16,18 @@ class OrderBook:
         self._bids: dict[float, float] = {}
         self._asks: dict[float, float] = {}
 
+    def clear(self) -> None:
+        self._bids.clear()
+        self._asks.clear()
+
+    def load_snapshot(self, bids: Iterable[Iterable[str]], asks: Iterable[Iterable[str]]) -> OrderBookState:
+        self.clear()
+        for price, qty in _iter_levels(bids):
+            _apply_level(self._bids, price, qty)
+        for price, qty in _iter_levels(asks):
+            _apply_level(self._asks, price, qty)
+        return self.top_levels()
+
     def apply_depth_update(self, data: dict) -> OrderBookState:
         for price, qty in _iter_levels(data.get("b", [])):
             _apply_level(self._bids, price, qty)
@@ -29,6 +41,13 @@ class OrderBook:
         bids = sorted(self._bids.items(), key=lambda x: x[0], reverse=True)[: self.n_levels]
         asks = sorted(self._asks.items(), key=lambda x: x[0])[: self.n_levels]
         return OrderBookState(bids=bids, asks=asks)
+
+    def qty_at(self, side: str, price: float) -> float:
+        if side == "bid":
+            return self._bids.get(price, 0.0)
+        if side == "ask":
+            return self._asks.get(price, 0.0)
+        raise ValueError(f"Unknown side: {side}")
 
 
 
