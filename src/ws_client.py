@@ -15,7 +15,7 @@ class BinanceWsClient:
         self.cfg = cfg
         self.logger = logger
 
-    async def run(self, handler) -> None:
+    async def run(self, handler, on_connect=None, on_disconnect=None) -> None:
         delay = self.cfg.reconnect_base_delay_sec
         url = stream_url(self.cfg)
 
@@ -24,6 +24,8 @@ class BinanceWsClient:
                 self.logger.info("Connecting to %s", url)
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
                     self.logger.info("WebSocket connected")
+                    if on_connect is not None:
+                        await on_connect()
                     delay = self.cfg.reconnect_base_delay_sec
                     async for message in ws:
                         payload = json.loads(message)
@@ -31,6 +33,8 @@ class BinanceWsClient:
                         data = payload.get("data", {})
                         await handler(stream, data)
             except (ConnectionError, OSError, asyncio.TimeoutError, WebSocketException, json.JSONDecodeError) as exc:
+                if on_disconnect is not None:
+                    await on_disconnect()
                 self.logger.warning("WebSocket disconnected: %s", exc)
                 self.logger.info("Reconnecting in %.1f sec", delay)
                 await asyncio.sleep(delay)
