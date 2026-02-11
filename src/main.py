@@ -14,6 +14,10 @@ from src.ws_client import BinanceWsClient
 
 
 class App:
+    MIN_BUFFER_BEFORE_SNAPSHOT = 50
+    SNAPSHOT_BUFFER_WAIT_TIMEOUT_SEC = 2.0
+    SNAPSHOT_RETRY_DELAY_SEC = 0.7
+
     def __init__(self, cfg: AppConfig) -> None:
         self.cfg = cfg
         self.logger = setup_logger(cfg.log_file)
@@ -34,6 +38,7 @@ class App:
         self.wall_candidates = 0
         self.last_update_id = 0
         self.synced = False
+        self.resyncing = False
         self.depth_buffer: list[dict] = []
         self.state_lock = asyncio.Lock()
         self.snapshot_task: asyncio.Task | None = None
@@ -42,6 +47,7 @@ class App:
         self.logger.info("Initializing local orderbook sync")
         async with self.state_lock:
             self.synced = False
+            self.resyncing = True
             self.last_update_id = 0
             self.depth_buffer = []
             self.last_state = OrderBookState(bids=[], asks=[])
@@ -54,6 +60,7 @@ class App:
     async def on_disconnect(self) -> None:
         async with self.state_lock:
             self.synced = False
+            self.resyncing = False
             self.last_update_id = 0
 
     async def on_message(self, stream: str, data: dict) -> None:
@@ -77,6 +84,7 @@ class App:
     async def _bootstrap_snapshot(self) -> None:
         while True:
             try:
+                await self._wait_for_buffer_before_snapshot()
                 snapshot = await asyncio.to_thread(self._fetch_depth_snapshot)
                 async with self.state_lock:
                     self.logger.info(
@@ -86,11 +94,26 @@ class App:
                     )
                     if self._try_sync_from_snapshot(snapshot):
                         self.logger.info("Orderbook synchronized at updateId=%d", self.last_update_id)
+                        self.resyncing = False
                         return
-                await asyncio.sleep(0.2)
+                self.logger.info("Snapshot sync attempt failed; retrying with accumulated buffer")
+                await asyncio.sleep(self.SNAPSHOT_RETRY_DELAY_SEC)
             except Exception as exc:
                 self.logger.warning("Snapshot bootstrap failed: %s", exc)
                 await asyncio.sleep(1.0)
+
+    async def _wait_for_buffer_before_snapshot(self) -> None:
+        start = asyncio.get_running_loop().time()
+        while True:
+            async with self.state_lock:
+                if self.synced:
+                    return
+                buffer_len = len(self.depth_buffer)
+            if buffer_len >= self.MIN_BUFFER_BEFORE_SNAPSHOT:
+                return
+            if asyncio.get_running_loop().time() - start >= self.SNAPSHOT_BUFFER_WAIT_TIMEOUT_SEC:
+                return
+            await asyncio.sleep(0.05)
 
     def _fetch_depth_snapshot(self) -> dict:
         params = urlencode({"symbol": self.cfg.depth_stream.split("@")[0].upper(), "limit": self.cfg.snapshot_limit})
@@ -143,7 +166,7 @@ class App:
                 return False
 
         self.synced = True
-        self.depth_buffer = []
+        self.depth_buffer = [event for event in self.depth_buffer if int(event.get("u", 0)) > self.last_update_id]
         self._process_state_update()
         return True
 
@@ -199,8 +222,8 @@ class App:
 
     async def _start_resync_locked(self) -> None:
         self.synced = False
+        self.resyncing = True
         self.last_update_id = 0
-        self.depth_buffer = []
         self.orderbook.clear()
         self.detector.reset()
         if self.snapshot_task is None or self.snapshot_task.done():
