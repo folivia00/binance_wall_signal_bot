@@ -134,7 +134,11 @@ class App:
         self.orderbook.load_snapshot(snapshot.get("bids", []), snapshot.get("asks", []))
         self.last_update_id = last_update_id
 
-        for event in buffered[first_idx:]:
+        first_event = buffered[first_idx]
+        if not self._apply_depth_event_bootstrap(first_event, target):
+            return False
+
+        for event in buffered[first_idx + 1 :]:
             if not self._apply_depth_event(event):
                 return False
 
@@ -151,8 +155,42 @@ class App:
         if final_u < self.last_update_id:
             return True
         if prev_u != self.last_update_id:
+            self.logger.warning(
+                "Depth event rejected: reason=prev_u_mismatch last_update_id=%d U=%d u=%d pu=%d",
+                self.last_update_id,
+                first_u,
+                final_u,
+                prev_u,
+            )
             return False
         if not (first_u <= self.last_update_id + 1 <= final_u):
+            self.logger.warning(
+                "Depth event rejected: reason=coverage_mismatch last_update_id=%d U=%d u=%d pu=%d",
+                self.last_update_id,
+                first_u,
+                final_u,
+                prev_u,
+            )
+            return False
+
+        self.last_state = self.orderbook.apply_depth_update(data)
+        self.last_update_id = final_u
+        return True
+
+    def _apply_depth_event_bootstrap(self, data: dict, target: int) -> bool:
+        first_u = int(data.get("U", 0))
+        final_u = int(data.get("u", 0))
+        prev_u = int(data.get("pu", self.last_update_id))
+
+        if not (first_u <= target <= final_u):
+            self.logger.warning(
+                "Bootstrap depth event rejected: reason=coverage_mismatch last_update_id=%d U=%d u=%d pu=%d target=%d",
+                self.last_update_id,
+                first_u,
+                final_u,
+                prev_u,
+                target,
+            )
             return False
 
         self.last_state = self.orderbook.apply_depth_update(data)
