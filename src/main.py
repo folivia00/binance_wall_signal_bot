@@ -187,14 +187,13 @@ class App:
             )
             return False
         if not (first_u <= self.last_update_id + 1 <= final_u):
-            self.logger.warning(
-                "Depth event rejected: reason=coverage_mismatch last_update_id=%d U=%d u=%d pu=%d",
+            self.logger.debug(
+                "Depth event coverage mismatch (ignored): last_update_id=%d U=%d u=%d pu=%d",
                 self.last_update_id,
                 first_u,
                 final_u,
                 prev_u,
             )
-            return False
 
         self.last_state = self.orderbook.apply_depth_update(data)
         self.last_update_id = final_u
