@@ -45,8 +45,11 @@ class WallDetector:
         signal_cooldown_sec: float,
         max_touch_bps: float,
         price_cooldown_sec: float,
+        price_bucket: float,
         full_remove_eps: float,
         only_full_remove: bool,
+        major_drop_min_pct: float,
+        min_touch_bps: float,
     ) -> None:
         self.n_levels = n_levels
         self.wall_mult = wall_mult
@@ -58,8 +61,11 @@ class WallDetector:
         self.signal_cooldown_sec = signal_cooldown_sec
         self.max_touch_bps = max_touch_bps
         self.price_cooldown_sec = price_cooldown_sec
+        self.price_bucket = max(price_bucket, 1e-8)
         self.full_remove_eps = full_remove_eps
         self.only_full_remove = only_full_remove
+        self.major_drop_min_pct = major_drop_min_pct
+        self.min_touch_bps = min_touch_bps
         self.walls: dict[str, dict[float, WallInfo]] = {"bid": {}, "ask": {}}
         self.last_signal_ts: dict[str, float] = {"LONG": 0.0, "SHORT": 0.0}
         self.last_level_signal_ts: dict[tuple[str, float], float] = {}
@@ -143,7 +149,11 @@ class WallDetector:
                 continue
 
             drop_pct = (info.qty - current_qty) / info.qty
+            full_remove = current_qty <= self.full_remove_eps
             if drop_pct < self.wall_drop_pct:
+                continue
+
+            if not full_remove and drop_pct < self.major_drop_min_pct:
                 continue
 
             if side == "ask" and imbalance < self.imb_thr:
@@ -151,13 +161,12 @@ class WallDetector:
             if side == "bid" and imbalance > -self.imb_thr:
                 continue
 
-            full_remove = current_qty <= self.full_remove_eps
             if self.only_full_remove and not full_remove:
                 continue
 
             touch_ref = best_bid if side == "bid" else best_ask
-            touch_bps = _calc_touch_bps(touch_ref, price, mid)
-            if touch_bps > self.max_touch_bps:
+            touch_bps = _calc_touch_bps(touch_ref, price, mid, side)
+            if touch_bps < self.min_touch_bps or touch_bps > self.max_touch_bps:
                 continue
 
             if not self._allow_level_signal(side, price, now):
@@ -197,7 +206,7 @@ class WallDetector:
         return best
 
     def _allow_level_signal(self, side: str, price: float, now: float) -> bool:
-        price_key = round(price, 1)
+        price_key = round(price / self.price_bucket) * self.price_bucket
         level_key = (side, price_key)
         last_ts = self.last_level_signal_ts.get(level_key)
         if last_ts is not None and now - last_ts < self.price_cooldown_sec:
@@ -228,8 +237,12 @@ def _calc_spread_bps(bids: list[tuple[float, float]], asks: list[tuple[float, fl
     return (asks[0][0] - bids[0][0]) / mid * 10_000
 
 
-def _calc_touch_bps(reference_price: float, wall_price: float, mid: float) -> float:
+def _calc_touch_bps(reference_price: float, wall_price: float, mid: float, side: str) -> float:
     if reference_price <= 0 or mid <= 0:
+        return float("inf")
+    if side == "bid" and wall_price > reference_price:
+        return float("inf")
+    if side == "ask" and wall_price < reference_price:
         return float("inf")
     return abs(reference_price - wall_price) / mid * 10_000
 

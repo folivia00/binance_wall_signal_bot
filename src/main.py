@@ -35,8 +35,11 @@ class App:
             signal_cooldown_sec=cfg.signal_cooldown_sec,
             max_touch_bps=cfg.max_touch_bps,
             price_cooldown_sec=cfg.price_cooldown_sec,
+            price_bucket=cfg.price_bucket,
             full_remove_eps=cfg.full_remove_eps,
             only_full_remove=cfg.only_full_remove,
+            major_drop_min_pct=cfg.major_drop_min_pct,
+            min_touch_bps=cfg.min_touch_bps,
         )
         self.last_state = OrderBookState(bids=[], asks=[])
         self.last_imbalance = 0.0
@@ -265,7 +268,7 @@ class App:
 
     def _log_signal(self, event: SignalEvent) -> None:
         self.logger.info(
-            "SIGNAL %s | event=%s score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.4f drop_pct=%.2f imbalance=%.4f dist_bps=%.2f best_bid=%.2f best_ask=%.2f touch_bps=%.2f ts=%.3f",
+            "SIGNAL %s | event_type=%s score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.4f drop_pct=%.2f imbalance=%.4f dist_bps=%.2f touch_bps=%.2f best_bid=%.2f best_ask=%.2f ts=%.3f",
             event.direction,
             event.event_type,
             event.score,
@@ -276,15 +279,21 @@ class App:
             event.drop_pct,
             event.imbalance,
             event.dist_bps,
+            event.touch_bps,
             event.best_bid,
             event.best_ask,
-            event.touch_bps,
             event.ts,
         )
 
 
+def _validate_ws_base_url(ws_base_url: str) -> None:
+    if "binance.com" not in ws_base_url:
+        raise ValueError(f"Invalid ws_base_url={ws_base_url!r}. Expected Binance domain binance.com")
+
+
 async def async_main() -> None:
     cfg = AppConfig()
+    _validate_ws_base_url(cfg.ws_base_url)
     app = App(cfg)
     ws_client = BinanceWsClient(cfg=cfg, logger=app.logger)
 
@@ -298,6 +307,8 @@ async def async_main() -> None:
 def main() -> None:
     try:
         asyncio.run(async_main())
+    except ValueError as exc:
+        print(f"Startup configuration error: {exc}")
     except KeyboardInterrupt:
         print("Stopped by user at", time.strftime("%Y-%m-%d %H:%M:%S"))
 
