@@ -31,6 +31,10 @@ class App:
             wall_drop_pct=cfg.wall_drop_pct,
             imb_thr=cfg.imb_thr,
             signal_cooldown_sec=cfg.signal_cooldown_sec,
+            max_touch_bps=cfg.max_touch_bps,
+            price_cooldown_sec=cfg.price_cooldown_sec,
+            full_remove_eps=cfg.full_remove_eps,
+            only_full_remove=cfg.only_full_remove,
         )
         self.last_state = OrderBookState(bids=[], asks=[])
         self.last_imbalance = 0.0
@@ -254,8 +258,9 @@ class App:
 
     def _log_signal(self, event: SignalEvent) -> None:
         self.logger.info(
-            "SIGNAL %s | score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.4f drop_pct=%.2f imbalance=%.4f dist_bps=%.2f ts=%.3f",
+            "SIGNAL %s | event=%s score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.4f drop_pct=%.2f imbalance=%.4f dist_bps=%.2f best_bid=%.2f best_ask=%.2f touch_bps=%.2f ts=%.3f",
             event.direction,
+            event.event_type,
             event.score,
             event.side,
             event.price,
@@ -264,6 +269,9 @@ class App:
             event.drop_pct,
             event.imbalance,
             event.dist_bps,
+            event.best_bid,
+            event.best_ask,
+            event.touch_bps,
             event.ts,
         )
 

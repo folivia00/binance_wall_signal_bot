@@ -26,6 +26,10 @@ class SignalEvent:
     imbalance: float
     score: int
     dist_bps: float
+    touch_bps: float
+    best_bid: float
+    best_ask: float
+    event_type: str
 
 
 class WallDetector:
@@ -39,6 +43,10 @@ class WallDetector:
         wall_drop_pct: float,
         imb_thr: float,
         signal_cooldown_sec: float,
+        max_touch_bps: float,
+        price_cooldown_sec: float,
+        full_remove_eps: float,
+        only_full_remove: bool,
     ) -> None:
         self.n_levels = n_levels
         self.wall_mult = wall_mult
@@ -48,11 +56,17 @@ class WallDetector:
         self.wall_drop_pct = wall_drop_pct
         self.imb_thr = imb_thr
         self.signal_cooldown_sec = signal_cooldown_sec
+        self.max_touch_bps = max_touch_bps
+        self.price_cooldown_sec = price_cooldown_sec
+        self.full_remove_eps = full_remove_eps
+        self.only_full_remove = only_full_remove
         self.walls: dict[str, dict[float, WallInfo]] = {"bid": {}, "ask": {}}
         self.last_signal_ts: dict[str, float] = {"LONG": 0.0, "SHORT": 0.0}
+        self.last_level_signal_ts: dict[tuple[str, float], float] = {}
 
     def reset(self) -> None:
         self.walls = {"bid": {}, "ask": {}}
+        self.last_level_signal_ts = {}
 
     def process(self, state: OrderBookState, qty_at) -> tuple[list[SignalEvent], float, float, int]:
         now = time.time()
@@ -70,8 +84,10 @@ class WallDetector:
         self._track_new_walls("ask", asks, ask_median, mid, now)
 
         events: list[SignalEvent] = []
-        bid_event = self._check_drops("bid", imbalance, qty_at, now)
-        ask_event = self._check_drops("ask", imbalance, qty_at, now)
+        best_bid = bids[0][0] if bids else 0.0
+        best_ask = asks[0][0] if asks else 0.0
+        bid_event = self._check_drops("bid", imbalance, qty_at, now, mid, best_bid, best_ask)
+        ask_event = self._check_drops("ask", imbalance, qty_at, now, mid, best_bid, best_ask)
         if bid_event:
             events.append(bid_event)
         if ask_event:
@@ -100,7 +116,16 @@ class WallDetector:
             if qty >= threshold and price not in side_walls:
                 side_walls[price] = WallInfo(qty=qty, first_seen_ts=now, dist_bps=dist_bps)
 
-    def _check_drops(self, side: str, imbalance: float, qty_at, now: float) -> SignalEvent | None:
+    def _check_drops(
+        self,
+        side: str,
+        imbalance: float,
+        qty_at,
+        now: float,
+        mid: float,
+        best_bid: float,
+        best_ask: float,
+    ) -> SignalEvent | None:
         side_walls = self.walls[side]
         direction = "SHORT" if side == "bid" else "LONG"
 
@@ -127,6 +152,21 @@ class WallDetector:
                 side_walls.pop(price, None)
                 continue
 
+            full_remove = current_qty <= self.full_remove_eps
+            if self.only_full_remove and not full_remove:
+                side_walls.pop(price, None)
+                continue
+
+            touch_ref = best_bid if side == "bid" else best_ask
+            touch_bps = _calc_touch_bps(touch_ref, price, mid)
+            if touch_bps > self.max_touch_bps:
+                side_walls.pop(price, None)
+                continue
+
+            if not self._allow_level_signal(side, price, now):
+                side_walls.pop(price, None)
+                continue
+
             score = min(100, int(50 + abs(imbalance) * 200))
             event = SignalEvent(
                 ts=now,
@@ -139,6 +179,10 @@ class WallDetector:
                 imbalance=imbalance,
                 score=score,
                 dist_bps=info.dist_bps,
+                touch_bps=touch_bps,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                event_type="FULL_REMOVE" if full_remove else "MAJOR_DROP",
             )
             if best is None or event.score > best.score:
                 best = event
@@ -153,6 +197,15 @@ class WallDetector:
 
         self.last_signal_ts[direction] = now
         return best
+
+    def _allow_level_signal(self, side: str, price: float, now: float) -> bool:
+        price_key = round(price, 1)
+        level_key = (side, price_key)
+        last_ts = self.last_level_signal_ts.get(level_key)
+        if last_ts is not None and now - last_ts < self.price_cooldown_sec:
+            return False
+        self.last_level_signal_ts[level_key] = now
+        return True
 
 
 def _calc_imbalance(bids: list[tuple[float, float]], asks: list[tuple[float, float]]) -> float:
@@ -175,3 +228,9 @@ def _calc_spread_bps(bids: list[tuple[float, float]], asks: list[tuple[float, fl
     if mid <= 0:
         return 0.0
     return (asks[0][0] - bids[0][0]) / mid * 10_000
+
+
+def _calc_touch_bps(reference_price: float, wall_price: float, mid: float) -> float:
+    if reference_price <= 0 or mid <= 0:
+        return float("inf")
+    return abs(reference_price - wall_price) / mid * 10_000
