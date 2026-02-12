@@ -17,6 +17,8 @@ class App:
     MIN_BUFFER_BEFORE_SNAPSHOT = 50
     SNAPSHOT_BUFFER_WAIT_TIMEOUT_SEC = 2.0
     SNAPSHOT_RETRY_DELAY_SEC = 0.7
+    MAX_DEPTH_BUFFER = 5000
+    RESYNC_BUFFER_KEEP = 2000
 
     def __init__(self, cfg: AppConfig) -> None:
         self.cfg = cfg
@@ -74,8 +76,7 @@ class App:
         async with self.state_lock:
             if not self.synced:
                 self.depth_buffer.append(data)
-                if len(self.depth_buffer) > 5000:
-                    self.depth_buffer = self.depth_buffer[-5000:]
+                self._cap_depth_buffer_for_resync()
                 return
 
             if not self._apply_depth_event(data):
@@ -229,8 +230,14 @@ class App:
         self.last_update_id = 0
         self.orderbook.clear()
         self.detector.reset()
+        self._cap_depth_buffer_for_resync()
         if self.snapshot_task is None or self.snapshot_task.done():
             self.snapshot_task = asyncio.create_task(self._bootstrap_snapshot())
+
+    def _cap_depth_buffer_for_resync(self) -> None:
+        if len(self.depth_buffer) <= self.MAX_DEPTH_BUFFER:
+            return
+        self.depth_buffer = self.depth_buffer[-self.RESYNC_BUFFER_KEEP :]
 
     def _process_state_update(self) -> None:
         events, imbalance, spread_bps, wall_candidates = self.detector.process(self.last_state, self.orderbook.qty_at)

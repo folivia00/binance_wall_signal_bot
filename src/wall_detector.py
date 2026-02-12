@@ -130,6 +130,7 @@ class WallDetector:
         direction = "SHORT" if side == "bid" else "LONG"
 
         best: SignalEvent | None = None
+        best_price: float | None = None
         for price, info in list(side_walls.items()):
             age = now - info.first_seen_ts
             if age > self.event_ttl_sec:
@@ -146,25 +147,20 @@ class WallDetector:
                 continue
 
             if side == "ask" and imbalance < self.imb_thr:
-                side_walls.pop(price, None)
                 continue
             if side == "bid" and imbalance > -self.imb_thr:
-                side_walls.pop(price, None)
                 continue
 
             full_remove = current_qty <= self.full_remove_eps
             if self.only_full_remove and not full_remove:
-                side_walls.pop(price, None)
                 continue
 
             touch_ref = best_bid if side == "bid" else best_ask
             touch_bps = _calc_touch_bps(touch_ref, price, mid)
             if touch_bps > self.max_touch_bps:
-                side_walls.pop(price, None)
                 continue
 
             if not self._allow_level_signal(side, price, now):
-                side_walls.pop(price, None)
                 continue
 
             score = min(100, int(50 + abs(imbalance) * 200))
@@ -184,9 +180,9 @@ class WallDetector:
                 best_ask=best_ask,
                 event_type="FULL_REMOVE" if full_remove else "MAJOR_DROP",
             )
-            if best is None or event.score > best.score:
+            if best is None or _is_better_event(event, best):
                 best = event
-            side_walls.pop(price, None)
+                best_price = price
 
         if best is None:
             return None
@@ -196,6 +192,8 @@ class WallDetector:
             return None
 
         self.last_signal_ts[direction] = now
+        if best_price is not None:
+            side_walls.pop(best_price, None)
         return best
 
     def _allow_level_signal(self, side: str, price: float, now: float) -> bool:
@@ -234,3 +232,13 @@ def _calc_touch_bps(reference_price: float, wall_price: float, mid: float) -> fl
     if reference_price <= 0 or mid <= 0:
         return float("inf")
     return abs(reference_price - wall_price) / mid * 10_000
+
+
+def _is_better_event(candidate: SignalEvent, current_best: SignalEvent) -> bool:
+    if candidate.event_type != current_best.event_type:
+        return candidate.event_type == "FULL_REMOVE"
+    if candidate.old_qty != current_best.old_qty:
+        return candidate.old_qty > current_best.old_qty
+    if candidate.touch_bps != current_best.touch_bps:
+        return candidate.touch_bps < current_best.touch_bps
+    return candidate.score > current_best.score
