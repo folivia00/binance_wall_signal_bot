@@ -27,6 +27,7 @@ class SignalEvent:
     score: int
     dist_bps: float
     touch_bps: float
+    age_sec: float
     best_bid: float
     best_ask: float
     full_remove: bool
@@ -51,6 +52,8 @@ class WallDetector:
         only_full_remove: bool,
         major_drop_min_pct: float,
         min_touch_bps: float,
+        min_wall_age_sec: float,
+        global_cooldown_sec: float,
     ) -> None:
         self.n_levels = n_levels
         self.wall_mult = wall_mult
@@ -67,8 +70,11 @@ class WallDetector:
         self.only_full_remove = only_full_remove
         self.major_drop_min_pct = major_drop_min_pct
         self.min_touch_bps = min_touch_bps
+        self.min_wall_age_sec = min_wall_age_sec
+        self.global_cooldown_sec = global_cooldown_sec
         self.walls: dict[str, dict[float, WallInfo]] = {"bid": {}, "ask": {}}
         self.last_signal_ts: dict[str, float] = {"LONG": 0.0, "SHORT": 0.0}
+        self.last_global_signal_ts = 0.0
         self.last_level_signal_ts: dict[tuple[str, float], float] = {}
 
     def reset(self) -> None:
@@ -143,6 +149,8 @@ class WallDetector:
             if age > self.event_ttl_sec:
                 side_walls.pop(price, None)
                 continue
+            if age < self.min_wall_age_sec:
+                continue
 
             current_qty = qty_at(side, price)
             if info.qty <= 0:
@@ -150,7 +158,9 @@ class WallDetector:
                 continue
 
             drop_pct = (info.qty - current_qty) / info.qty
-            full_remove = current_qty <= self.full_remove_eps
+            is_zero = current_qty <= self.full_remove_eps
+            is_big_wall = info.qty >= self.min_wall_qty
+            full_remove = is_zero and is_big_wall and drop_pct >= self.major_drop_min_pct
             major_drop = drop_pct >= self.major_drop_min_pct
             if drop_pct < self.wall_drop_pct:
                 continue
@@ -182,7 +192,10 @@ class WallDetector:
             if not self._allow_level_signal(side, price, now):
                 continue
 
-            score = min(100, int(50 + abs(imbalance) * 200))
+            imb_score = min(40.0, abs(imbalance) * 200)
+            drop_score = min(40.0, drop_pct * 40)
+            touch_score = max(0.0, 20.0 - touch_bps * 10)
+            score = int(min(100.0, 10.0 + imb_score + drop_score + touch_score))
             event = SignalEvent(
                 ts=now,
                 side=side,
@@ -195,6 +208,7 @@ class WallDetector:
                 score=score,
                 dist_bps=info.dist_bps,
                 touch_bps=touch_bps,
+                age_sec=age,
                 best_bid=best_bid,
                 best_ask=best_ask,
                 full_remove=full_remove,
@@ -210,14 +224,17 @@ class WallDetector:
         since_last = now - self.last_signal_ts[direction]
         if since_last < self.signal_cooldown_sec:
             return None
+        if now - self.last_global_signal_ts < self.global_cooldown_sec:
+            return None
 
         self.last_signal_ts[direction] = now
+        self.last_global_signal_ts = now
         if best_price is not None:
             side_walls.pop(best_price, None)
         return best
 
     def _allow_level_signal(self, side: str, price: float, now: float) -> bool:
-        price_key = round(price / self.price_bucket) * self.price_bucket
+        price_key = round(round(price / self.price_bucket) * self.price_bucket, 8)
         level_key = (side, price_key)
         last_ts = self.last_level_signal_ts.get(level_key)
         if last_ts is not None and now - last_ts < self.price_cooldown_sec:

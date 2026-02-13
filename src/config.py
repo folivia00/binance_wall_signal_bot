@@ -23,6 +23,7 @@ PRICE_BUCKET = 0.1
 MIN_TOUCH_BPS = 0.0
 FULL_REMOVE_EPS = 1e-6
 MAJOR_DROP_MIN_PCT = 0.95
+GLOBAL_COOLDOWN_SEC = 1.0
 SNAPSHOT_LIMIT = 1000
 
 if PROFILE == "strict":
@@ -32,6 +33,8 @@ if PROFILE == "strict":
     WALL_DROP_PCT = 0.98
     MAX_TOUCH_BPS = 2.0
     ONLY_FULL_REMOVE = True
+    MIN_WALL_AGE_SEC = 0.40
+    GLOBAL_COOLDOWN_SEC = 1.5
 elif PROFILE == "balanced":
     MIN_WALL_QTY = 7.0
     MAX_WALL_DIST_BPS = 15.0
@@ -39,6 +42,8 @@ elif PROFILE == "balanced":
     WALL_DROP_PCT = 0.92
     MAX_TOUCH_BPS = 2.0
     ONLY_FULL_REMOVE = False
+    MIN_WALL_AGE_SEC = 0.25
+    GLOBAL_COOLDOWN_SEC = 1.0
 else:
     raise ValueError(f"Unsupported PROFILE='{PROFILE}'. Use 'balanced' or 'strict'.")
 
@@ -71,6 +76,8 @@ class AppConfig:
     full_remove_eps: float = FULL_REMOVE_EPS
     only_full_remove: bool = ONLY_FULL_REMOVE
     major_drop_min_pct: float = MAJOR_DROP_MIN_PCT
+    min_wall_age_sec: float = MIN_WALL_AGE_SEC
+    global_cooldown_sec: float = GLOBAL_COOLDOWN_SEC
     profile: str = PROFILE
     snapshot_limit: int = SNAPSHOT_LIMIT
     reconnect_base_delay_sec: float = RECONNECT_BASE_DELAY_SEC
