@@ -40,6 +40,8 @@ class App:
             only_full_remove=cfg.only_full_remove,
             major_drop_min_pct=cfg.major_drop_min_pct,
             min_touch_bps=cfg.min_touch_bps,
+            min_wall_age_sec=cfg.min_wall_age_sec,
+            global_cooldown_sec=cfg.global_cooldown_sec,
         )
         self.last_state = OrderBookState(bids=[], asks=[])
         self.last_imbalance = 0.0
@@ -268,13 +270,14 @@ class App:
 
     def _log_signal(self, event: SignalEvent) -> None:
         self.logger.info(
-            "SIGNAL %s | PROFILE=%s event_type=%s drop_pct=%.3f full_remove=%s touch_bps=%.2f best_bid=%.2f best_ask=%.2f score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.6f imbalance=%.4f dist_bps=%.2f ts=%.3f",
+            "SIGNAL %s | PROFILE=%s event_type=%s drop_pct=%.3f full_remove=%s touch_bps=%.2f age_sec=%.3f best_bid=%.2f best_ask=%.2f score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.6f imbalance=%.4f dist_bps=%.2f ts=%.3f",
             event.direction,
             self.cfg.profile,
             event.event_type,
             event.drop_pct,
             event.full_remove,
             event.touch_bps,
+            event.age_sec,
             event.best_bid,
             event.best_ask,
             event.score,
@@ -301,7 +304,7 @@ async def async_main() -> None:
 
     app.logger.info("Starting binance_wall_signal_bot")
     app.logger.info(
-        "Profile settings | PROFILE=%s only_full_remove=%s wall_drop_pct=%.3f major_drop_min_pct=%.3f full_remove_eps=%.8f max_touch_bps=%.2f min_wall_qty=%.2f price_cooldown_sec=%.1f",
+        "Profile settings | PROFILE=%s only_full_remove=%s wall_drop_pct=%.3f major_drop_min_pct=%.3f full_remove_eps=%.8f max_touch_bps=%.2f min_wall_qty=%.2f min_wall_age_sec=%.2f global_cooldown_sec=%.2f price_cooldown_sec=%.1f",
         cfg.profile,
         cfg.only_full_remove,
         cfg.wall_drop_pct,
@@ -309,6 +312,8 @@ async def async_main() -> None:
         cfg.full_remove_eps,
         cfg.max_touch_bps,
         cfg.min_wall_qty,
+        cfg.min_wall_age_sec,
+        cfg.global_cooldown_sec,
         cfg.price_cooldown_sec,
     )
     await asyncio.gather(
