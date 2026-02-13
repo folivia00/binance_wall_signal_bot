@@ -268,20 +268,22 @@ class App:
 
     def _log_signal(self, event: SignalEvent) -> None:
         self.logger.info(
-            "SIGNAL %s | event_type=%s score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.4f drop_pct=%.2f imbalance=%.4f dist_bps=%.2f touch_bps=%.2f best_bid=%.2f best_ask=%.2f ts=%.3f",
+            "SIGNAL %s | PROFILE=%s event_type=%s drop_pct=%.3f full_remove=%s touch_bps=%.2f best_bid=%.2f best_ask=%.2f score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.6f imbalance=%.4f dist_bps=%.2f ts=%.3f",
             event.direction,
+            self.cfg.profile,
             event.event_type,
+            event.drop_pct,
+            event.full_remove,
+            event.touch_bps,
+            event.best_bid,
+            event.best_ask,
             event.score,
             event.side,
             event.price,
             event.old_qty,
             event.current_qty,
-            event.drop_pct,
             event.imbalance,
             event.dist_bps,
-            event.touch_bps,
-            event.best_bid,
-            event.best_ask,
             event.ts,
         )
 
@@ -298,6 +300,17 @@ async def async_main() -> None:
     ws_client = BinanceWsClient(cfg=cfg, logger=app.logger)
 
     app.logger.info("Starting binance_wall_signal_bot")
+    app.logger.info(
+        "Profile settings | PROFILE=%s only_full_remove=%s wall_drop_pct=%.3f major_drop_min_pct=%.3f full_remove_eps=%.8f max_touch_bps=%.2f min_wall_qty=%.2f price_cooldown_sec=%.1f",
+        cfg.profile,
+        cfg.only_full_remove,
+        cfg.wall_drop_pct,
+        cfg.major_drop_min_pct,
+        cfg.full_remove_eps,
+        cfg.max_touch_bps,
+        cfg.min_wall_qty,
+        cfg.price_cooldown_sec,
+    )
     await asyncio.gather(
         ws_client.run(app.on_message, on_connect=app.on_connect, on_disconnect=app.on_disconnect),
         app.heartbeat_loop(),

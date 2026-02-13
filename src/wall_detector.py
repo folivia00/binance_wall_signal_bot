@@ -29,6 +29,7 @@ class SignalEvent:
     touch_bps: float
     best_bid: float
     best_ask: float
+    full_remove: bool
     event_type: str
 
 
@@ -150,23 +151,32 @@ class WallDetector:
 
             drop_pct = (info.qty - current_qty) / info.qty
             full_remove = current_qty <= self.full_remove_eps
+            major_drop = drop_pct >= self.major_drop_min_pct
             if drop_pct < self.wall_drop_pct:
                 continue
 
-            if not full_remove and drop_pct < self.major_drop_min_pct:
-                continue
+            if self.only_full_remove:
+                if not full_remove:
+                    continue
+                event_type = "FULL_REMOVE"
+            else:
+                if full_remove:
+                    event_type = "FULL_REMOVE"
+                elif major_drop:
+                    event_type = "MAJOR_DROP"
+                else:
+                    continue
 
             if side == "ask" and imbalance < self.imb_thr:
                 continue
             if side == "bid" and imbalance > -self.imb_thr:
                 continue
 
-            if self.only_full_remove and not full_remove:
-                continue
-
             touch_ref = best_bid if side == "bid" else best_ask
             touch_bps = _calc_touch_bps(touch_ref, price, mid, side)
-            if touch_bps < self.min_touch_bps or touch_bps > self.max_touch_bps:
+            if touch_bps < self.min_touch_bps:
+                continue
+            if touch_bps > self.max_touch_bps:
                 continue
 
             if not self._allow_level_signal(side, price, now):
@@ -187,7 +197,8 @@ class WallDetector:
                 touch_bps=touch_bps,
                 best_bid=best_bid,
                 best_ask=best_ask,
-                event_type="FULL_REMOVE" if full_remove else "MAJOR_DROP",
+                full_remove=full_remove,
+                event_type=event_type,
             )
             if best is None or _is_better_event(event, best):
                 best = event
