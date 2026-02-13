@@ -185,7 +185,7 @@ class App:
         final_u = int(data.get("u", 0))
         prev_u = int(data.get("pu", self.last_update_id))
 
-        if final_u < self.last_update_id:
+        if final_u <= self.last_update_id:
             return True
         if prev_u != self.last_update_id:
             self.logger.warning(
