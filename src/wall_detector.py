@@ -79,6 +79,8 @@ class WallDetector:
 
     def reset(self) -> None:
         self.walls = {"bid": {}, "ask": {}}
+        self.last_signal_ts = {"LONG": 0.0, "SHORT": 0.0}
+        self.last_global_signal_ts = 0.0
         self.last_level_signal_ts = {}
 
     def process(self, state: OrderBookState, qty_at) -> tuple[list[SignalEvent], float, float, int]:
@@ -175,7 +177,7 @@ class WallDetector:
                 elif major_drop:
                     event_type = "MAJOR_DROP"
                 else:
-                    continue
+                    event_type = "DROP"
 
             if side == "ask" and imbalance < self.imb_thr:
                 continue
