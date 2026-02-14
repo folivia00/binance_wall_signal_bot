@@ -74,6 +74,13 @@ class App:
             shock_distance_bps_cap=cfg.shock_distance_bps_cap,
             shock_min_age_sec=cfg.shock_min_age_sec,
             shock_age_full_sec=cfg.shock_age_full_sec,
+            min_depth_sum=cfg.min_depth_sum,
+            base_center_mode=cfg.base_center_mode,
+            base_ref_weight=cfg.base_ref_weight,
+            shock_distance_mode=cfg.shock_distance_mode,
+            shock_full_remove=cfg.shock_full_remove,
+            shock_major_drop=cfg.shock_major_drop,
+            shock_drop=cfg.shock_drop,
         )
 
     async def on_connect(self) -> None:
@@ -280,12 +287,13 @@ class App:
     def _process_state_update(self) -> None:
         now = time.time()
         self._ensure_round_reference(now)
-        events, imbalance, spread_bps, wall_candidates = self.detector.process(self.last_state, self.orderbook.qty_at)
+        trade_events, raw_events, imbalance, spread_bps, wall_candidates = self.detector.process(self.last_state, self.orderbook.qty_at)
         self.last_imbalance = imbalance
         self.last_spread_bps = spread_bps
         self.wall_candidates = wall_candidates
-        for event in events:
+        for event in raw_events:
             self.scorer.on_wall_event(event, now)
+        for event in trade_events:
             self._log_signal(event)
         self.last_score = self.scorer.on_orderbook_update(self.last_state, now)
 

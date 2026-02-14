@@ -34,6 +34,27 @@ class SignalEvent:
     event_type: str
 
 
+@dataclass
+class WallEvent:
+    ts: float
+    side: str
+    direction: str
+    price: float
+    old_qty: float
+    current_qty: float
+    drop_pct: float
+    imbalance: float
+    score: int
+    dist_bps: float
+    touch_bps: float
+    age_sec: float
+    best_bid: float
+    best_ask: float
+    full_remove: bool
+    event_type: str
+    passes_imbalance_gate: bool
+
+
 class WallDetector:
     def __init__(
         self,
@@ -83,7 +104,7 @@ class WallDetector:
         self.last_global_signal_ts = 0.0
         self.last_level_signal_ts = {}
 
-    def process(self, state: OrderBookState, qty_at) -> tuple[list[SignalEvent], float, float, int]:
+    def process(self, state: OrderBookState, qty_at) -> tuple[list[SignalEvent], list[WallEvent], float, float, int]:
         now = time.time()
         bids = state.bids[: self.n_levels]
         asks = state.asks[: self.n_levels]
@@ -98,18 +119,25 @@ class WallDetector:
         self._track_new_walls("bid", bids, bid_median, mid, now)
         self._track_new_walls("ask", asks, ask_median, mid, now)
 
-        events: list[SignalEvent] = []
+        trade_events: list[SignalEvent] = []
+        raw_events: list[WallEvent] = []
         best_bid = bids[0][0] if bids else 0.0
         best_ask = asks[0][0] if asks else 0.0
-        bid_event = self._check_drops("bid", imbalance, qty_at, now, mid, best_bid, best_ask)
-        ask_event = self._check_drops("ask", imbalance, qty_at, now, mid, best_bid, best_ask)
+        bid_raw = self._collect_side_events("bid", imbalance, qty_at, now, mid, best_bid, best_ask)
+        ask_raw = self._collect_side_events("ask", imbalance, qty_at, now, mid, best_bid, best_ask)
+
+        raw_events.extend(bid_raw)
+        raw_events.extend(ask_raw)
+
+        bid_event = self._pick_trade_event(bid_raw, now)
+        ask_event = self._pick_trade_event(ask_raw, now)
         if bid_event:
-            events.append(bid_event)
+            trade_events.append(bid_event)
         if ask_event:
-            events.append(ask_event)
+            trade_events.append(ask_event)
 
         wall_candidates = len(self.walls["bid"]) + len(self.walls["ask"])
-        return events, imbalance, spread_bps, wall_candidates
+        return trade_events, raw_events, imbalance, spread_bps, wall_candidates
 
     def _track_new_walls(
         self,
@@ -131,7 +159,7 @@ class WallDetector:
             if qty >= threshold and price not in side_walls:
                 side_walls[price] = WallInfo(qty=qty, first_seen_ts=now, dist_bps=dist_bps)
 
-    def _check_drops(
+    def _collect_side_events(
         self,
         side: str,
         imbalance: float,
@@ -140,12 +168,12 @@ class WallDetector:
         mid: float,
         best_bid: float,
         best_ask: float,
-    ) -> SignalEvent | None:
+    ) -> list[WallEvent]:
         side_walls = self.walls[side]
         direction = "SHORT" if side == "bid" else "LONG"
 
-        best: SignalEvent | None = None
-        best_price: float | None = None
+        events: list[WallEvent] = []
+        consumed_prices: list[float] = []
         for price, info in list(side_walls.items()):
             age = now - info.first_seen_ts
             if age > self.event_ttl_sec:
@@ -179,11 +207,6 @@ class WallDetector:
                 else:
                     event_type = "DROP"
 
-            if side == "ask" and imbalance < self.imb_thr:
-                continue
-            if side == "bid" and imbalance > -self.imb_thr:
-                continue
-
             touch_ref = best_bid if side == "bid" else best_ask
             touch_bps = _calc_touch_bps(touch_ref, price, mid, side)
             if touch_bps < self.min_touch_bps:
@@ -191,14 +214,15 @@ class WallDetector:
             if touch_bps > self.max_touch_bps:
                 continue
 
-            if not self._allow_level_signal(side, price, now):
-                continue
+            passes_imbalance_gate = not (
+                (side == "ask" and imbalance < self.imb_thr) or (side == "bid" and imbalance > -self.imb_thr)
+            )
 
             imb_score = min(40.0, abs(imbalance) * 200)
             drop_score = min(40.0, drop_pct * 40)
             touch_score = max(0.0, 20.0 - touch_bps * 10)
             score = int(min(100.0, 10.0 + imb_score + drop_score + touch_score))
-            event = SignalEvent(
+            event = WallEvent(
                 ts=now,
                 side=side,
                 direction=direction,
@@ -215,25 +239,52 @@ class WallDetector:
                 best_ask=best_ask,
                 full_remove=full_remove,
                 event_type=event_type,
+                passes_imbalance_gate=passes_imbalance_gate,
             )
-            if best is None or _is_better_event(event, best):
-                best = event
-                best_price = price
+            events.append(event)
+            consumed_prices.append(price)
 
-        if best is None:
+        for price in consumed_prices:
+            side_walls.pop(price, None)
+        return events
+
+    def _pick_trade_event(self, raw_events: list[WallEvent], now: float) -> SignalEvent | None:
+        candidates = [event for event in raw_events if event.passes_imbalance_gate]
+        if not candidates:
             return None
 
-        since_last = now - self.last_signal_ts[direction]
-        if since_last < self.signal_cooldown_sec:
+        best = candidates[0]
+        for event in candidates[1:]:
+            if _is_better_event(event, best):
+                best = event
+
+        if now - self.last_signal_ts[best.direction] < self.signal_cooldown_sec:
             return None
         if now - self.last_global_signal_ts < self.global_cooldown_sec:
             return None
+        if not self._allow_level_signal(best.side, best.price, now):
+            return None
 
-        self.last_signal_ts[direction] = now
+        self.last_signal_ts[best.direction] = now
         self.last_global_signal_ts = now
-        if best_price is not None:
-            side_walls.pop(best_price, None)
-        return best
+        return SignalEvent(
+            ts=best.ts,
+            side=best.side,
+            direction=best.direction,
+            price=best.price,
+            old_qty=best.old_qty,
+            current_qty=best.current_qty,
+            drop_pct=best.drop_pct,
+            imbalance=best.imbalance,
+            score=best.score,
+            dist_bps=best.dist_bps,
+            touch_bps=best.touch_bps,
+            age_sec=best.age_sec,
+            best_bid=best.best_bid,
+            best_ask=best.best_ask,
+            full_remove=best.full_remove,
+            event_type=best.event_type,
+        )
 
     def _allow_level_signal(self, side: str, price: float, now: float) -> bool:
         price_key = round(round(price / self.price_bucket) * self.price_bucket, 8)

@@ -29,3 +29,36 @@
   - Add deterministic tests for distance and age multipliers.
   - Add replay backtest harness for event-to-outcome calibration.
   - Consider protecting `on_wall_event`/`on_orderbook_update` ordering with explicit event timestamps in runner.
+
+## Session 2026-02-14 v2
+
+### Какие файлы менял
+- `src/polymarket_scorer.py`
+- `src/wall_detector.py`
+- `src/main.py`
+- `src/config.py`
+- `tests/test_polymarket_scorer.py`
+
+### Почему ref drift и почему raw events
+- `base_raw` теперь не клипуется в ±1 из-за «уехавшего» `ref_price`: добавлен blend-центр (`mid/ref`) и минимальный порог ликвидности `min_depth_sum`.
+- Добавлен quality-gate глубины: при недостаточной суммарной взвешенной глубине база возвращается к `0.0` и отдаёт диагностику `depth_ok/depth_sum`.
+- Wall events для скорера развязаны с imbalance-гейтом: детектор возвращает `events_trade` (как раньше, gated) и `events_raw` (для shock, без imbalance/cooldown, но с TTL/age/touch фильтрами).
+
+### Новые конфиги / профили
+- Скорер:
+  - `base_center_mode` (`ref|mid|blend`)
+  - `base_ref_weight`
+  - `min_depth_sum`
+  - `shock_distance_mode` (`ref|mid|blend`)
+  - `shock_full_remove`, `shock_major_drop`, `shock_drop`
+- Профили:
+  - `balanced`: `base_scale=30`, `shock=12/7/4`, `half_life=15`, `min_depth_sum=1.0`, `base_ref_weight=0.3`
+  - `strict`: `base_scale=20`, `shock=8/5/2`, `half_life=10`, `min_depth_sum=2.0`, `base_ref_weight=0.2`
+
+### Команды тестов
+- `PYTHONPATH=. pytest -q`
+
+### Известные риски / параметры для калибровки
+- В blend-режиме итог чувствителен к `base_ref_weight`; для разных рынков значение может отличаться.
+- При очень редком стакане `min_depth_sum` может часто прибивать базу к нулю — для low-liquidity рынков порог нужно снижать.
+- Raw events теперь «съедают» стенку сразу после детекта drop/remove; если нужен повторный сигнал от того же уровня, потребуется отдельная логика re-arm.
