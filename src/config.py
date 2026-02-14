@@ -26,6 +26,17 @@ MAJOR_DROP_MIN_PCT = 0.95
 GLOBAL_COOLDOWN_SEC = 1.0
 SNAPSHOT_LIMIT = 1000
 
+ROUND_INTERVAL_SEC = 15 * 60
+REFERENCE_SOURCE = "mid"
+PRESSURE_RANGES_BPS = (5.0, 10.0, 20.0)
+PRESSURE_WEIGHTS = (1.0, 0.6, 0.3)
+BASE_SCALE = 30.0
+SHOCK_HALF_LIFE_SEC = 15.0
+MAX_SHOCK = 35.0
+SHOCK_DISTANCE_BPS_CAP = 20.0
+SHOCK_MIN_AGE_SEC = 0.2
+SHOCK_AGE_FULL_SEC = 1.0
+
 if PROFILE == "strict":
     MIN_WALL_QTY = 7.0
     MAX_WALL_DIST_BPS = 15.0
@@ -80,6 +91,16 @@ class AppConfig:
     global_cooldown_sec: float = GLOBAL_COOLDOWN_SEC
     profile: str = PROFILE
     snapshot_limit: int = SNAPSHOT_LIMIT
+    round_interval_sec: int = ROUND_INTERVAL_SEC
+    reference_source: str = REFERENCE_SOURCE
+    pressure_ranges_bps: tuple[float, ...] = PRESSURE_RANGES_BPS
+    pressure_weights: tuple[float, ...] = PRESSURE_WEIGHTS
+    base_scale: float = BASE_SCALE
+    shock_half_life_sec: float = SHOCK_HALF_LIFE_SEC
+    max_shock: float = MAX_SHOCK
+    shock_distance_bps_cap: float = SHOCK_DISTANCE_BPS_CAP
+    shock_min_age_sec: float = SHOCK_MIN_AGE_SEC
+    shock_age_full_sec: float = SHOCK_AGE_FULL_SEC
     reconnect_base_delay_sec: float = RECONNECT_BASE_DELAY_SEC
     reconnect_max_delay_sec: float = RECONNECT_MAX_DELAY_SEC
     log_file: str = LOG_FILE

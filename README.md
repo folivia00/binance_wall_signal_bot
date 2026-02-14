@@ -53,3 +53,21 @@ python -m src.main
 - API-ключи не нужны (только публичный market data stream).
 - Реализован реконнект с экспоненциальной задержкой.
 - При любом рассинхроне update id запускается пересборка локального стакана.
+
+## Polymarket scoring
+
+Добавлен скорер вероятности для 15-минутных раундов:
+
+- `p_up` и `p_down = 100 - p_up`;
+- `reference_price` фиксируется в начале каждого 15-минутного раунда (`round_id` = unix-time старта раунда);
+- база: давление стакана в диапазонах 5/10/20 bps с весами 1.0/0.6/0.3;
+- шоки: события `DROP` / `MAJOR_DROP` / `FULL_REMOVE` от детектора стенок;
+- шоки затухают экспоненциально (`SHOCK_HALF_LIFE_SEC`, по умолчанию 15 сек).
+
+Heartbeat теперь содержит: `round_id`, `ref_price`, `p_up/p_down`, `base_raw`, `base_p_up`, `shock`.
+
+### Live smoke
+
+```bash
+python scripts/live_smoke_scorer.py --duration 90
+```

@@ -9,6 +9,7 @@ from urllib.request import urlopen
 from src.config import AppConfig
 from src.logger import setup_logger
 from src.orderbook import OrderBook, OrderBookState
+from src.polymarket_scorer import PolymarketScorer, ScoreSnapshot
 from src.wall_detector import SignalEvent, WallDetector
 from src.ws_client import BinanceWsClient
 
@@ -48,11 +49,32 @@ class App:
         self.last_spread_bps = 0.0
         self.wall_candidates = 0
         self.last_update_id = 0
+        self.last_score = ScoreSnapshot(
+            p_up=50.0,
+            p_down=50.0,
+            base_raw=0.0,
+            base_p_up=50.0,
+            shock_value=0.0,
+            ref_price=0.0,
+            round_id="",
+            pressure_breakdown=[],
+        )
+        self.current_round_id = ""
         self.synced = False
         self.resyncing = False
         self.depth_buffer: list[dict] = []
         self.state_lock = asyncio.Lock()
         self.snapshot_task: asyncio.Task | None = None
+        self.scorer = PolymarketScorer(
+            pressure_ranges_bps=cfg.pressure_ranges_bps,
+            pressure_weights=cfg.pressure_weights,
+            base_scale=cfg.base_scale,
+            shock_half_life_sec=cfg.shock_half_life_sec,
+            max_shock=cfg.max_shock,
+            shock_distance_bps_cap=cfg.shock_distance_bps_cap,
+            shock_min_age_sec=cfg.shock_min_age_sec,
+            shock_age_full_sec=cfg.shock_age_full_sec,
+        )
 
     async def on_connect(self) -> None:
         self.logger.info("Initializing local orderbook sync")
@@ -62,6 +84,17 @@ class App:
             self.last_update_id = 0
             self.depth_buffer = []
             self.last_state = OrderBookState(bids=[], asks=[])
+            self.last_score = ScoreSnapshot(
+                p_up=50.0,
+                p_down=50.0,
+                base_raw=0.0,
+                base_p_up=50.0,
+                shock_value=0.0,
+                ref_price=0.0,
+                round_id="",
+                pressure_breakdown=[],
+            )
+            self.current_round_id = ""
             self.detector.reset()
             self.orderbook.clear()
             if self.snapshot_task is not None:
@@ -245,12 +278,37 @@ class App:
         self.depth_buffer = self.depth_buffer[-self.RESYNC_BUFFER_KEEP :]
 
     def _process_state_update(self) -> None:
+        now = time.time()
+        self._ensure_round_reference(now)
         events, imbalance, spread_bps, wall_candidates = self.detector.process(self.last_state, self.orderbook.qty_at)
         self.last_imbalance = imbalance
         self.last_spread_bps = spread_bps
         self.wall_candidates = wall_candidates
         for event in events:
+            self.scorer.on_wall_event(event, now)
             self._log_signal(event)
+        self.last_score = self.scorer.on_orderbook_update(self.last_state, now)
+
+    def _ensure_round_reference(self, ts: float) -> None:
+        if not self.last_state.bids or not self.last_state.asks:
+            return
+        round_start = int(ts // self.cfg.round_interval_sec) * self.cfg.round_interval_sec
+        round_id = str(round_start)
+        if round_id == self.current_round_id:
+            return
+
+        best_bid = self.last_state.bids[0][0]
+        best_ask = self.last_state.asks[0][0]
+        if self.cfg.reference_source == "best_bid":
+            ref_price = best_bid
+        elif self.cfg.reference_source == "best_ask":
+            ref_price = best_ask
+        else:
+            ref_price = (best_bid + best_ask) / 2
+
+        self.current_round_id = round_id
+        self.scorer.set_reference(price=ref_price, ts=ts, round_id=round_id)
+        self.logger.info("round_start | round_id=%s ref_price=%.2f source=%s", round_id, ref_price, self.cfg.reference_source)
 
     async def heartbeat_loop(self) -> None:
         while True:
@@ -258,7 +316,7 @@ class App:
             best_bid = self.last_state.bids[0][0] if self.last_state.bids else None
             best_ask = self.last_state.asks[0][0] if self.last_state.asks else None
             self.logger.info(
-                "heartbeat | synced=%s best_bid=%s best_ask=%s imbalance=%.4f spread_bps=%.2f wall_candidates=%d buffer_len=%d",
+                "heartbeat | synced=%s best_bid=%s best_ask=%s imbalance=%.4f spread_bps=%.2f wall_candidates=%d buffer_len=%d round_id=%s ref_price=%.2f p_up=%.2f p_down=%.2f base_raw=%.4f base_p_up=%.2f shock=%.2f",
                 self.synced,
                 f"{best_bid:.2f}" if best_bid is not None else "n/a",
                 f"{best_ask:.2f}" if best_ask is not None else "n/a",
@@ -266,6 +324,13 @@ class App:
                 self.last_spread_bps,
                 self.wall_candidates,
                 len(self.depth_buffer),
+                self.last_score.round_id or "n/a",
+                self.last_score.ref_price,
+                self.last_score.p_up,
+                self.last_score.p_down,
+                self.last_score.base_raw,
+                self.last_score.base_p_up,
+                self.last_score.shock_value,
             )
 
     def _log_signal(self, event: SignalEvent) -> None:
