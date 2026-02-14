@@ -1,0 +1,1051 @@
+﻿
+===== START: README.md =====
+
+# binance_wall_signal_bot
+
+Python-бот для Binance USDT-M Futures, который поддерживает **корректный локальный стакан** (`snapshot + diff updates`) и выдаёт более строгие сигналы по исчезновению крупных стен.
+
+## Что делает
+
+- Подключается к `btcusdt@depth@100ms` (Binance Futures diff depth).
+- Перед обработкой сигналов синхронизирует локальный стакан по официальной схеме:
+  - буферизует WS события;
+  - берёт REST snapshot (`/fapi/v1/depth?limit=1000`);
+  - отбрасывает события с `u < lastUpdateId`;
+  - стартует применение с первого события, где `U <= lastUpdateId <= u`;
+  - дальше применяет дифы строго по цепочке update id (`pu`/`U`/`u`), при разрыве запускает ресинк.
+- Ищет стены только в top-N уровнях (`N_LEVELS=100`) и фильтрует:
+  - `qty >= max(MIN_WALL_QTY, WALL_MULT * median_qty)`;
+  - расстояние до mid не больше `MAX_WALL_DIST_BPS`.
+- Генерирует `wall_drop` если объём на **той же цене** в полном локальном стакане упал на `>= WALL_DROP_PCT` в пределах `EVENT_TTL_SEC`.
+- Подтверждает направление imbalance:
+  - `ask wall drop -> LONG`, только если `imbalance >= IMB_THR`;
+  - `bid wall drop -> SHORT`, только если `imbalance <= -IMB_THR`.
+- Включает anti-spam:
+  - cooldown `SIGNAL_COOLDOWN_SEC` отдельно для LONG/SHORT;
+  - максимум 1 сигнал на сторону за тик.
+- Пишет heartbeat каждые 2 секунды: `best_bid/best_ask`, `imbalance`, `spread_bps`, число wall-кандидатов.
+
+## Запуск
+
+Требования: Python 3.11+
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m src.main
+```
+
+## Конфигурация
+
+Параметры находятся в `src/config.py`:
+
+- `N_LEVELS = 100`
+- `WALL_MULT = 5.0`
+- `MIN_WALL_QTY = 1.0`
+- `MAX_WALL_DIST_BPS = 15.0`
+- `EVENT_TTL_SEC = 2.0`
+- `WALL_DROP_PCT = 0.70`
+- `IMB_THR = 0.12`
+- `SIGNAL_COOLDOWN_SEC = 2.0`
+- `HEARTBEAT_INTERVAL_SEC = 2.0`
+
+## Примечания
+
+- API-ключи не нужны (только публичный market data stream).
+- Реализован реконнект с экспоненциальной задержкой.
+- При любом рассинхроне update id запускается пересборка локального стакана.
+
+
+===== END: README.md =====
+
+
+===== START: code.ps1 =====
+
+param([string]$OutFile = "ALL_CODE.txt")
+
+$skipDirs = @(".git","node_modules","dist","build",".venv",".idea",".vscode","__pycache__","data")
+$denyExt  = @(
+  ".png",".jpg",".jpeg",".gif",".bmp",".webp",".ico",".svg",
+  ".pdf",".zip",".7z",".tar",".gz",".xz",
+  ".mp3",".mp4",".mov",".avi",".ogg",".wav",
+  ".woff",".woff2",".ttf",".eot",
+  ".exe",".dll",".so",".dylib",".bin",".dat",
+  ".db",".sqlite",".sqlite3",
+  ".pcap",".har",".bak",
+  ".log",".logg"
+)
+$denyNames = @(".env","ALL_CODE.txt")
+
+function Test-BinaryLike([byte[]]$Bytes) {
+  if ($Bytes.Length -eq 0) { return $false }
+  if ($Bytes -contains 0x00) { return $true }
+  $ctrl = 0
+  foreach ($b in $Bytes) {
+    if ( ($b -lt 0x09) -or ($b -ge 0x0E -and $b -le 0x1F) ) {
+      if ($b -ne 0x09 -and $b -ne 0x0A -and $b -ne 0x0D) { $ctrl++ }
+    }
+  }
+  return (($ctrl / [double]$Bytes.Length) -gt 0.30)
+}
+
+function Read-TextSmart([string]$Path) {
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  if (Test-BinaryLike $bytes) { return $null }
+  if ($bytes.Length -ge 3 -and $bytes[0]-eq 0xEF -and $bytes[1]-eq 0xBB -and $bytes[2]-eq 0xBF) {
+    return [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+  }
+  if ($bytes.Length -ge 2 -and $bytes[0]-eq 0xFF -and $bytes[1]-eq 0xFE) {
+    return [System.Text.Encoding]::Unicode.GetString($bytes)           # UTF-16 LE
+  }
+  if ($bytes.Length -ge 2 -and $bytes[0]-eq 0xFE -and $bytes[1]-eq 0xFF) {
+    return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes)  # UTF-16 BE
+  }
+  try { return [System.Text.Encoding]::UTF8.GetString($bytes) }
+  catch { return [System.Text.Encoding]::GetEncoding(1251).GetString($bytes) }
+}
+
+# get only tracked files
+$files = git ls-files | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+
+# filter
+$files = $files | Where-Object {
+  $path = $_.Replace('\','/')
+  foreach ($d in $skipDirs) { if ($path -like "$d/*" -or $path -like "*/$d/*") { return $false } }
+  $ext = [System.IO.Path]::GetExtension($_).ToLowerInvariant()
+  if ($denyExt -contains $ext) { return $false }
+  $name = [System.IO.Path]::GetFileName($_)
+  if ($denyNames -contains $name) { return $false }
+  return $true
+}
+
+Remove-Item $OutFile -ErrorAction SilentlyContinue
+Set-Content -Path $OutFile -Value "" -Encoding UTF8
+
+foreach ($f in $files) {
+  $text = $null
+  try { $text = Read-TextSmart -Path $f } catch { $text = $null }
+  if ($null -eq $text) { continue }
+
+  Add-Content -Path $OutFile -Encoding UTF8 -Value "===== START: $f =====`r`n"
+  Add-Content -Path $OutFile -Encoding UTF8 -Value $text
+  Add-Content -Path $OutFile -Encoding UTF8 -Value "`r`n===== END: $f =====`r`n`r`n"
+}
+
+Write-Host ("Done -> {0}" -f $OutFile)
+
+
+===== END: code.ps1 =====
+
+
+===== START: requirements.txt =====
+
+websockets>=12.0
+
+
+===== END: requirements.txt =====
+
+
+===== START: src/__init__.py =====
+
+"""binance_wall_signal_bot package."""
+
+
+===== END: src/__init__.py =====
+
+
+===== START: src/config.py =====
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import os
+
+WS_BASE_URL = "wss://fstream.binance.com/stream?streams="
+SYMBOL = "btcusdt"
+REST_DEPTH_URL = "https://fapi.binance.com/fapi/v1/depth"
+
+DEPTH_STREAM = f"{SYMBOL}@depth@100ms"
+AGG_TRADE_STREAM = f"{SYMBOL}@aggTrade"
+ENABLE_AGG_TRADE = False
+
+PROFILE = os.getenv("PROFILE", "balanced").strip().lower()
+
+N_LEVELS = 100
+WALL_MULT = 5.0
+IMB_THR = 0.12
+HEARTBEAT_INTERVAL_SEC = 2.0
+SIGNAL_COOLDOWN_SEC = 10.0
+PRICE_COOLDOWN_SEC = 60.0
+PRICE_BUCKET = 0.1
+MIN_TOUCH_BPS = 0.0
+FULL_REMOVE_EPS = 1e-6
+MAJOR_DROP_MIN_PCT = 0.95
+GLOBAL_COOLDOWN_SEC = 1.0
+SNAPSHOT_LIMIT = 1000
+
+if PROFILE == "strict":
+    MIN_WALL_QTY = 7.0
+    MAX_WALL_DIST_BPS = 15.0
+    EVENT_TTL_SEC = 2.0
+    WALL_DROP_PCT = 0.98
+    MAX_TOUCH_BPS = 2.0
+    ONLY_FULL_REMOVE = True
+    MIN_WALL_AGE_SEC = 0.40
+    GLOBAL_COOLDOWN_SEC = 1.5
+elif PROFILE == "balanced":
+    MIN_WALL_QTY = 7.0
+    MAX_WALL_DIST_BPS = 15.0
+    EVENT_TTL_SEC = 2.0
+    WALL_DROP_PCT = 0.92
+    MAX_TOUCH_BPS = 2.0
+    ONLY_FULL_REMOVE = False
+    MIN_WALL_AGE_SEC = 0.25
+    GLOBAL_COOLDOWN_SEC = 1.0
+else:
+    raise ValueError(f"Unsupported PROFILE='{PROFILE}'. Use 'balanced' or 'strict'.")
+
+
+LOG_FILE = "logs/signals.log"
+
+RECONNECT_BASE_DELAY_SEC = 1.0
+RECONNECT_MAX_DELAY_SEC = 30.0
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    ws_base_url: str = WS_BASE_URL
+    depth_stream: str = DEPTH_STREAM
+    agg_trade_stream: str = AGG_TRADE_STREAM
+    enable_agg_trade: bool = ENABLE_AGG_TRADE
+    n_levels: int = N_LEVELS
+    wall_mult: float = WALL_MULT
+    min_wall_qty: float = MIN_WALL_QTY
+    max_wall_dist_bps: float = MAX_WALL_DIST_BPS
+    event_ttl_sec: float = EVENT_TTL_SEC
+    wall_drop_pct: float = WALL_DROP_PCT
+    imb_thr: float = IMB_THR
+    heartbeat_interval_sec: float = HEARTBEAT_INTERVAL_SEC
+    signal_cooldown_sec: float = SIGNAL_COOLDOWN_SEC
+    max_touch_bps: float = MAX_TOUCH_BPS
+    min_touch_bps: float = MIN_TOUCH_BPS
+    price_cooldown_sec: float = PRICE_COOLDOWN_SEC
+    price_bucket: float = PRICE_BUCKET
+    full_remove_eps: float = FULL_REMOVE_EPS
+    only_full_remove: bool = ONLY_FULL_REMOVE
+    major_drop_min_pct: float = MAJOR_DROP_MIN_PCT
+    min_wall_age_sec: float = MIN_WALL_AGE_SEC
+    global_cooldown_sec: float = GLOBAL_COOLDOWN_SEC
+    profile: str = PROFILE
+    snapshot_limit: int = SNAPSHOT_LIMIT
+    reconnect_base_delay_sec: float = RECONNECT_BASE_DELAY_SEC
+    reconnect_max_delay_sec: float = RECONNECT_MAX_DELAY_SEC
+    log_file: str = LOG_FILE
+    rest_depth_url: str = REST_DEPTH_URL
+
+
+def stream_names(cfg: AppConfig) -> list[str]:
+    streams = [cfg.depth_stream]
+    if cfg.enable_agg_trade:
+        streams.append(cfg.agg_trade_stream)
+    return streams
+
+
+def stream_url(cfg: AppConfig) -> str:
+    joined = "/".join(stream_names(cfg))
+    return f"{cfg.ws_base_url}{joined}"
+
+
+===== END: src/config.py =====
+
+
+===== START: src/logger.py =====
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+
+def setup_logger(log_file: str) -> logging.Logger:
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+
+    logger = logging.getLogger("wall_signal_bot")
+    logger.setLevel(logging.INFO)
+
+    if logger.handlers:
+        return logger
+
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    logger.propagate = False
+    return logger
+
+
+===== END: src/logger.py =====
+
+
+===== START: src/main.py =====
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from urllib.parse import urlencode
+from urllib.request import urlopen
+
+from src.config import AppConfig
+from src.logger import setup_logger
+from src.orderbook import OrderBook, OrderBookState
+from src.wall_detector import SignalEvent, WallDetector
+from src.ws_client import BinanceWsClient
+
+
+class App:
+    MIN_BUFFER_BEFORE_SNAPSHOT = 50
+    SNAPSHOT_BUFFER_WAIT_TIMEOUT_SEC = 2.0
+    SNAPSHOT_RETRY_DELAY_SEC = 0.7
+    MAX_DEPTH_BUFFER = 5000
+    RESYNC_BUFFER_KEEP = 2000
+
+    def __init__(self, cfg: AppConfig) -> None:
+        self.cfg = cfg
+        self.logger = setup_logger(cfg.log_file)
+        self.orderbook = OrderBook(n_levels=cfg.n_levels)
+        self.detector = WallDetector(
+            n_levels=cfg.n_levels,
+            wall_mult=cfg.wall_mult,
+            min_wall_qty=cfg.min_wall_qty,
+            max_wall_dist_bps=cfg.max_wall_dist_bps,
+            event_ttl_sec=cfg.event_ttl_sec,
+            wall_drop_pct=cfg.wall_drop_pct,
+            imb_thr=cfg.imb_thr,
+            signal_cooldown_sec=cfg.signal_cooldown_sec,
+            max_touch_bps=cfg.max_touch_bps,
+            price_cooldown_sec=cfg.price_cooldown_sec,
+            price_bucket=cfg.price_bucket,
+            full_remove_eps=cfg.full_remove_eps,
+            only_full_remove=cfg.only_full_remove,
+            major_drop_min_pct=cfg.major_drop_min_pct,
+            min_touch_bps=cfg.min_touch_bps,
+            min_wall_age_sec=cfg.min_wall_age_sec,
+            global_cooldown_sec=cfg.global_cooldown_sec,
+        )
+        self.last_state = OrderBookState(bids=[], asks=[])
+        self.last_imbalance = 0.0
+        self.last_spread_bps = 0.0
+        self.wall_candidates = 0
+        self.last_update_id = 0
+        self.synced = False
+        self.resyncing = False
+        self.depth_buffer: list[dict] = []
+        self.state_lock = asyncio.Lock()
+        self.snapshot_task: asyncio.Task | None = None
+
+    async def on_connect(self) -> None:
+        self.logger.info("Initializing local orderbook sync")
+        async with self.state_lock:
+            self.synced = False
+            self.resyncing = True
+            self.last_update_id = 0
+            self.depth_buffer = []
+            self.last_state = OrderBookState(bids=[], asks=[])
+            self.detector.reset()
+            self.orderbook.clear()
+            if self.snapshot_task is not None:
+                self.snapshot_task.cancel()
+            self.snapshot_task = asyncio.create_task(self._bootstrap_snapshot())
+
+    async def on_disconnect(self) -> None:
+        async with self.state_lock:
+            self.synced = False
+            self.resyncing = False
+            self.last_update_id = 0
+
+    async def on_message(self, stream: str, data: dict) -> None:
+        if stream != self.cfg.depth_stream:
+            return
+
+        async with self.state_lock:
+            if not self.synced:
+                self.depth_buffer.append(data)
+                self._cap_depth_buffer_for_resync()
+                return
+
+            if not self._apply_depth_event(data):
+                self.logger.warning("Depth gap detected, forcing resync")
+                await self._start_resync_locked()
+                return
+
+            self._process_state_update()
+
+    async def _bootstrap_snapshot(self) -> None:
+        while True:
+            try:
+                await self._wait_for_buffer_before_snapshot()
+                snapshot = await asyncio.to_thread(self._fetch_depth_snapshot)
+                async with self.state_lock:
+                    self.logger.info(
+                        "Snapshot fetched | lastUpdateId=%s buffer_len=%d",
+                        snapshot.get("lastUpdateId"),
+                        len(self.depth_buffer),
+                    )
+                    if self._try_sync_from_snapshot(snapshot):
+                        self.logger.info("Orderbook synchronized at updateId=%d", self.last_update_id)
+                        self.resyncing = False
+                        return
+                self.logger.info("Snapshot sync attempt failed; retrying with accumulated buffer")
+                await asyncio.sleep(self.SNAPSHOT_RETRY_DELAY_SEC)
+            except Exception as exc:
+                self.logger.warning("Snapshot bootstrap failed: %s", exc)
+                await asyncio.sleep(1.0)
+
+    async def _wait_for_buffer_before_snapshot(self) -> None:
+        start = asyncio.get_running_loop().time()
+        while True:
+            async with self.state_lock:
+                if self.synced:
+                    return
+                buffer_len = len(self.depth_buffer)
+            if buffer_len >= self.MIN_BUFFER_BEFORE_SNAPSHOT:
+                return
+            if asyncio.get_running_loop().time() - start >= self.SNAPSHOT_BUFFER_WAIT_TIMEOUT_SEC:
+                return
+            await asyncio.sleep(0.05)
+
+    def _fetch_depth_snapshot(self) -> dict:
+        params = urlencode({"symbol": self.cfg.depth_stream.split("@")[0].upper(), "limit": self.cfg.snapshot_limit})
+        url = f"{self.cfg.rest_depth_url}?{params}"
+        with urlopen(url, timeout=10) as response:
+            payload = response.read().decode("utf-8")
+        return json.loads(payload)
+
+    def _try_sync_from_snapshot(self, snapshot: dict) -> bool:
+        last_update_id = int(snapshot["lastUpdateId"])
+        target = last_update_id + 1
+        buffered = [event for event in self.depth_buffer if int(event.get("u", 0)) >= target]
+        if not buffered:
+            return False
+
+        first_idx = -1
+        for idx, event in enumerate(buffered):
+            first_u = int(event.get("U", 0))
+            final_u = int(event.get("u", 0))
+            if first_u <= target <= final_u:
+                first_idx = idx
+                break
+
+        if first_idx < 0:
+            sample = buffered[:20]
+            min_u = min((int(event.get("U", 0)) for event in sample), default=None)
+            max_u = max((int(event.get("U", 0)) for event in sample), default=None)
+            min_final = min((int(event.get("u", 0)) for event in sample), default=None)
+            max_final = max((int(event.get("u", 0)) for event in sample), default=None)
+            self.logger.warning(
+                "Snapshot sync failed: no covering event for target=%d in buffer_len=%d (sample U=[%s..%s], u=[%s..%s])",
+                target,
+                len(buffered),
+                min_u,
+                max_u,
+                min_final,
+                max_final,
+            )
+            return False
+
+        self.orderbook.load_snapshot(snapshot.get("bids", []), snapshot.get("asks", []))
+        self.last_update_id = last_update_id
+
+        first_event = buffered[first_idx]
+        if not self._apply_depth_event_bootstrap(first_event, target):
+            return False
+
+        for event in buffered[first_idx + 1 :]:
+            if not self._apply_depth_event(event):
+                return False
+
+        self.synced = True
+        self.depth_buffer = [event for event in self.depth_buffer if int(event.get("u", 0)) > self.last_update_id]
+        self._process_state_update()
+        return True
+
+    def _apply_depth_event(self, data: dict) -> bool:
+        first_u = int(data.get("U", 0))
+        final_u = int(data.get("u", 0))
+        prev_u = int(data.get("pu", self.last_update_id))
+
+        if final_u <= self.last_update_id:
+            return True
+        if prev_u != self.last_update_id:
+            self.logger.warning(
+                "Depth event rejected: reason=prev_u_mismatch last_update_id=%d U=%d u=%d pu=%d",
+                self.last_update_id,
+                first_u,
+                final_u,
+                prev_u,
+            )
+            return False
+        if not (first_u <= self.last_update_id + 1 <= final_u):
+            self.logger.debug(
+                "Depth event coverage mismatch (ignored): last_update_id=%d U=%d u=%d pu=%d",
+                self.last_update_id,
+                first_u,
+                final_u,
+                prev_u,
+            )
+
+        self.last_state = self.orderbook.apply_depth_update(data)
+        self.last_update_id = final_u
+        return True
+
+    def _apply_depth_event_bootstrap(self, data: dict, target: int) -> bool:
+        first_u = int(data.get("U", 0))
+        final_u = int(data.get("u", 0))
+        prev_u = int(data.get("pu", self.last_update_id))
+
+        if not (first_u <= target <= final_u):
+            self.logger.warning(
+                "Bootstrap depth event rejected: reason=coverage_mismatch last_update_id=%d U=%d u=%d pu=%d target=%d",
+                self.last_update_id,
+                first_u,
+                final_u,
+                prev_u,
+                target,
+            )
+            return False
+
+        self.last_state = self.orderbook.apply_depth_update(data)
+        self.last_update_id = final_u
+        return True
+
+    async def _start_resync_locked(self) -> None:
+        self.synced = False
+        self.resyncing = True
+        self.last_update_id = 0
+        self.orderbook.clear()
+        self.detector.reset()
+        self._cap_depth_buffer_for_resync()
+        if self.snapshot_task is None or self.snapshot_task.done():
+            self.snapshot_task = asyncio.create_task(self._bootstrap_snapshot())
+
+    def _cap_depth_buffer_for_resync(self) -> None:
+        if len(self.depth_buffer) <= self.MAX_DEPTH_BUFFER:
+            return
+        self.depth_buffer = self.depth_buffer[-self.RESYNC_BUFFER_KEEP :]
+
+    def _process_state_update(self) -> None:
+        events, imbalance, spread_bps, wall_candidates = self.detector.process(self.last_state, self.orderbook.qty_at)
+        self.last_imbalance = imbalance
+        self.last_spread_bps = spread_bps
+        self.wall_candidates = wall_candidates
+        for event in events:
+            self._log_signal(event)
+
+    async def heartbeat_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.cfg.heartbeat_interval_sec)
+            best_bid = self.last_state.bids[0][0] if self.last_state.bids else None
+            best_ask = self.last_state.asks[0][0] if self.last_state.asks else None
+            self.logger.info(
+                "heartbeat | synced=%s best_bid=%s best_ask=%s imbalance=%.4f spread_bps=%.2f wall_candidates=%d buffer_len=%d",
+                self.synced,
+                f"{best_bid:.2f}" if best_bid is not None else "n/a",
+                f"{best_ask:.2f}" if best_ask is not None else "n/a",
+                self.last_imbalance,
+                self.last_spread_bps,
+                self.wall_candidates,
+                len(self.depth_buffer),
+            )
+
+    def _log_signal(self, event: SignalEvent) -> None:
+        self.logger.info(
+            "SIGNAL %s | PROFILE=%s event_type=%s drop_pct=%.3f full_remove=%s touch_bps=%.2f age_sec=%.3f best_bid=%.2f best_ask=%.2f score=%d side=%s price=%.2f old_qty=%.4f current_qty=%.6f imbalance=%.4f dist_bps=%.2f ts=%.3f",
+            event.direction,
+            self.cfg.profile,
+            event.event_type,
+            event.drop_pct,
+            event.full_remove,
+            event.touch_bps,
+            event.age_sec,
+            event.best_bid,
+            event.best_ask,
+            event.score,
+            event.side,
+            event.price,
+            event.old_qty,
+            event.current_qty,
+            event.imbalance,
+            event.dist_bps,
+            event.ts,
+        )
+
+
+def _validate_ws_base_url(ws_base_url: str) -> None:
+    if "binance.com" not in ws_base_url:
+        raise ValueError(f"Invalid ws_base_url={ws_base_url!r}. Expected Binance domain binance.com")
+
+
+async def async_main() -> None:
+    cfg = AppConfig()
+    _validate_ws_base_url(cfg.ws_base_url)
+    app = App(cfg)
+    ws_client = BinanceWsClient(cfg=cfg, logger=app.logger)
+
+    app.logger.info("Starting binance_wall_signal_bot")
+    app.logger.info(
+        "Profile settings | PROFILE=%s only_full_remove=%s wall_drop_pct=%.3f major_drop_min_pct=%.3f full_remove_eps=%.8f max_touch_bps=%.2f min_wall_qty=%.2f min_wall_age_sec=%.2f global_cooldown_sec=%.2f price_cooldown_sec=%.1f",
+        cfg.profile,
+        cfg.only_full_remove,
+        cfg.wall_drop_pct,
+        cfg.major_drop_min_pct,
+        cfg.full_remove_eps,
+        cfg.max_touch_bps,
+        cfg.min_wall_qty,
+        cfg.min_wall_age_sec,
+        cfg.global_cooldown_sec,
+        cfg.price_cooldown_sec,
+    )
+    await asyncio.gather(
+        ws_client.run(app.on_message, on_connect=app.on_connect, on_disconnect=app.on_disconnect),
+        app.heartbeat_loop(),
+    )
+
+
+def main() -> None:
+    try:
+        asyncio.run(async_main())
+    except ValueError as exc:
+        print(f"Startup configuration error: {exc}")
+    except KeyboardInterrupt:
+        print("Stopped by user at", time.strftime("%Y-%m-%d %H:%M:%S"))
+
+
+if __name__ == "__main__":
+    main()
+
+
+===== END: src/main.py =====
+
+
+===== START: src/orderbook.py =====
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable
+
+
+@dataclass
+class OrderBookState:
+    bids: list[tuple[float, float]]
+    asks: list[tuple[float, float]]
+
+
+class OrderBook:
+    def __init__(self, n_levels: int) -> None:
+        self.n_levels = n_levels
+        self._bids: dict[float, float] = {}
+        self._asks: dict[float, float] = {}
+
+    def clear(self) -> None:
+        self._bids.clear()
+        self._asks.clear()
+
+    def load_snapshot(self, bids: Iterable[Iterable[str]], asks: Iterable[Iterable[str]]) -> OrderBookState:
+        self.clear()
+        for price, qty in _iter_levels(bids):
+            _apply_level(self._bids, price, qty)
+        for price, qty in _iter_levels(asks):
+            _apply_level(self._asks, price, qty)
+        return self.top_levels()
+
+    def apply_depth_update(self, data: dict) -> OrderBookState:
+        for price, qty in _iter_levels(data.get("b", [])):
+            _apply_level(self._bids, price, qty)
+
+        for price, qty in _iter_levels(data.get("a", [])):
+            _apply_level(self._asks, price, qty)
+
+        return self.top_levels()
+
+    def top_levels(self) -> OrderBookState:
+        bids = sorted(self._bids.items(), key=lambda x: x[0], reverse=True)[: self.n_levels]
+        asks = sorted(self._asks.items(), key=lambda x: x[0])[: self.n_levels]
+        return OrderBookState(bids=bids, asks=asks)
+
+    def qty_at(self, side: str, price: float) -> float:
+        if side == "bid":
+            return self._bids.get(price, 0.0)
+        if side == "ask":
+            return self._asks.get(price, 0.0)
+        raise ValueError(f"Unknown side: {side}")
+
+
+
+def _iter_levels(raw_levels: Iterable[Iterable[str]]) -> Iterable[tuple[float, float]]:
+    for raw_price, raw_qty in raw_levels:
+        yield float(raw_price), float(raw_qty)
+
+
+
+def _apply_level(side_book: dict[float, float], price: float, qty: float) -> None:
+    if qty <= 0:
+        side_book.pop(price, None)
+    else:
+        side_book[price] = qty
+
+
+===== END: src/orderbook.py =====
+
+
+===== START: src/wall_detector.py =====
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from statistics import median
+import time
+
+from src.orderbook import OrderBookState
+
+
+@dataclass
+class WallInfo:
+    qty: float
+    first_seen_ts: float
+    dist_bps: float
+
+
+@dataclass
+class SignalEvent:
+    ts: float
+    side: str
+    direction: str
+    price: float
+    old_qty: float
+    current_qty: float
+    drop_pct: float
+    imbalance: float
+    score: int
+    dist_bps: float
+    touch_bps: float
+    age_sec: float
+    best_bid: float
+    best_ask: float
+    full_remove: bool
+    event_type: str
+
+
+class WallDetector:
+    def __init__(
+        self,
+        n_levels: int,
+        wall_mult: float,
+        min_wall_qty: float,
+        max_wall_dist_bps: float,
+        event_ttl_sec: float,
+        wall_drop_pct: float,
+        imb_thr: float,
+        signal_cooldown_sec: float,
+        max_touch_bps: float,
+        price_cooldown_sec: float,
+        price_bucket: float,
+        full_remove_eps: float,
+        only_full_remove: bool,
+        major_drop_min_pct: float,
+        min_touch_bps: float,
+        min_wall_age_sec: float,
+        global_cooldown_sec: float,
+    ) -> None:
+        self.n_levels = n_levels
+        self.wall_mult = wall_mult
+        self.min_wall_qty = min_wall_qty
+        self.max_wall_dist_bps = max_wall_dist_bps
+        self.event_ttl_sec = event_ttl_sec
+        self.wall_drop_pct = wall_drop_pct
+        self.imb_thr = imb_thr
+        self.signal_cooldown_sec = signal_cooldown_sec
+        self.max_touch_bps = max_touch_bps
+        self.price_cooldown_sec = price_cooldown_sec
+        self.price_bucket = max(price_bucket, 1e-8)
+        self.full_remove_eps = full_remove_eps
+        self.only_full_remove = only_full_remove
+        self.major_drop_min_pct = major_drop_min_pct
+        self.min_touch_bps = min_touch_bps
+        self.min_wall_age_sec = min_wall_age_sec
+        self.global_cooldown_sec = global_cooldown_sec
+        self.walls: dict[str, dict[float, WallInfo]] = {"bid": {}, "ask": {}}
+        self.last_signal_ts: dict[str, float] = {"LONG": 0.0, "SHORT": 0.0}
+        self.last_global_signal_ts = 0.0
+        self.last_level_signal_ts: dict[tuple[str, float], float] = {}
+
+    def reset(self) -> None:
+        self.walls = {"bid": {}, "ask": {}}
+        self.last_signal_ts = {"LONG": 0.0, "SHORT": 0.0}
+        self.last_global_signal_ts = 0.0
+        self.last_level_signal_ts = {}
+
+    def process(self, state: OrderBookState, qty_at) -> tuple[list[SignalEvent], float, float, int]:
+        now = time.time()
+        bids = state.bids[: self.n_levels]
+        asks = state.asks[: self.n_levels]
+
+        imbalance = _calc_imbalance(bids, asks)
+        spread_bps = _calc_spread_bps(bids, asks)
+        mid = _calc_mid(bids, asks)
+
+        bid_median = median([qty for _, qty in bids]) if bids else 0.0
+        ask_median = median([qty for _, qty in asks]) if asks else 0.0
+
+        self._track_new_walls("bid", bids, bid_median, mid, now)
+        self._track_new_walls("ask", asks, ask_median, mid, now)
+
+        events: list[SignalEvent] = []
+        best_bid = bids[0][0] if bids else 0.0
+        best_ask = asks[0][0] if asks else 0.0
+        bid_event = self._check_drops("bid", imbalance, qty_at, now, mid, best_bid, best_ask)
+        ask_event = self._check_drops("ask", imbalance, qty_at, now, mid, best_bid, best_ask)
+        if bid_event:
+            events.append(bid_event)
+        if ask_event:
+            events.append(ask_event)
+
+        wall_candidates = len(self.walls["bid"]) + len(self.walls["ask"])
+        return events, imbalance, spread_bps, wall_candidates
+
+    def _track_new_walls(
+        self,
+        side: str,
+        levels: list[tuple[float, float]],
+        median_qty: float,
+        mid: float,
+        now: float,
+    ) -> None:
+        if median_qty <= 0 or mid <= 0:
+            return
+
+        threshold = max(self.min_wall_qty, self.wall_mult * median_qty)
+        side_walls = self.walls[side]
+        for price, qty in levels:
+            dist_bps = abs(price - mid) / mid * 10_000
+            if dist_bps > self.max_wall_dist_bps:
+                continue
+            if qty >= threshold and price not in side_walls:
+                side_walls[price] = WallInfo(qty=qty, first_seen_ts=now, dist_bps=dist_bps)
+
+    def _check_drops(
+        self,
+        side: str,
+        imbalance: float,
+        qty_at,
+        now: float,
+        mid: float,
+        best_bid: float,
+        best_ask: float,
+    ) -> SignalEvent | None:
+        side_walls = self.walls[side]
+        direction = "SHORT" if side == "bid" else "LONG"
+
+        best: SignalEvent | None = None
+        best_price: float | None = None
+        for price, info in list(side_walls.items()):
+            age = now - info.first_seen_ts
+            if age > self.event_ttl_sec:
+                side_walls.pop(price, None)
+                continue
+            if age < self.min_wall_age_sec:
+                continue
+
+            current_qty = qty_at(side, price)
+            if info.qty <= 0:
+                side_walls.pop(price, None)
+                continue
+
+            drop_pct = (info.qty - current_qty) / info.qty
+            is_zero = current_qty <= self.full_remove_eps
+            is_big_wall = info.qty >= self.min_wall_qty
+            full_remove = is_zero and is_big_wall and drop_pct >= self.major_drop_min_pct
+            major_drop = drop_pct >= self.major_drop_min_pct
+            if drop_pct < self.wall_drop_pct:
+                continue
+
+            if self.only_full_remove:
+                if not full_remove:
+                    continue
+                event_type = "FULL_REMOVE"
+            else:
+                if full_remove:
+                    event_type = "FULL_REMOVE"
+                elif major_drop:
+                    event_type = "MAJOR_DROP"
+                else:
+                    event_type = "DROP"
+
+            if side == "ask" and imbalance < self.imb_thr:
+                continue
+            if side == "bid" and imbalance > -self.imb_thr:
+                continue
+
+            touch_ref = best_bid if side == "bid" else best_ask
+            touch_bps = _calc_touch_bps(touch_ref, price, mid, side)
+            if touch_bps < self.min_touch_bps:
+                continue
+            if touch_bps > self.max_touch_bps:
+                continue
+
+            if not self._allow_level_signal(side, price, now):
+                continue
+
+            imb_score = min(40.0, abs(imbalance) * 200)
+            drop_score = min(40.0, drop_pct * 40)
+            touch_score = max(0.0, 20.0 - touch_bps * 10)
+            score = int(min(100.0, 10.0 + imb_score + drop_score + touch_score))
+            event = SignalEvent(
+                ts=now,
+                side=side,
+                direction=direction,
+                price=price,
+                old_qty=info.qty,
+                current_qty=current_qty,
+                drop_pct=drop_pct,
+                imbalance=imbalance,
+                score=score,
+                dist_bps=info.dist_bps,
+                touch_bps=touch_bps,
+                age_sec=age,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                full_remove=full_remove,
+                event_type=event_type,
+            )
+            if best is None or _is_better_event(event, best):
+                best = event
+                best_price = price
+
+        if best is None:
+            return None
+
+        since_last = now - self.last_signal_ts[direction]
+        if since_last < self.signal_cooldown_sec:
+            return None
+        if now - self.last_global_signal_ts < self.global_cooldown_sec:
+            return None
+
+        self.last_signal_ts[direction] = now
+        self.last_global_signal_ts = now
+        if best_price is not None:
+            side_walls.pop(best_price, None)
+        return best
+
+    def _allow_level_signal(self, side: str, price: float, now: float) -> bool:
+        price_key = round(round(price / self.price_bucket) * self.price_bucket, 8)
+        level_key = (side, price_key)
+        last_ts = self.last_level_signal_ts.get(level_key)
+        if last_ts is not None and now - last_ts < self.price_cooldown_sec:
+            return False
+        self.last_level_signal_ts[level_key] = now
+        return True
+
+
+def _calc_imbalance(bids: list[tuple[float, float]], asks: list[tuple[float, float]]) -> float:
+    bids_qty = sum(qty for _, qty in bids)
+    asks_qty = sum(qty for _, qty in asks)
+    total = bids_qty + asks_qty
+    if total <= 0:
+        return 0.0
+    return (bids_qty - asks_qty) / total
+
+
+def _calc_mid(bids: list[tuple[float, float]], asks: list[tuple[float, float]]) -> float:
+    if not bids or not asks:
+        return 0.0
+    return (bids[0][0] + asks[0][0]) / 2
+
+
+def _calc_spread_bps(bids: list[tuple[float, float]], asks: list[tuple[float, float]]) -> float:
+    mid = _calc_mid(bids, asks)
+    if mid <= 0:
+        return 0.0
+    return (asks[0][0] - bids[0][0]) / mid * 10_000
+
+
+def _calc_touch_bps(reference_price: float, wall_price: float, mid: float, side: str) -> float:
+    if reference_price <= 0 or mid <= 0:
+        return float("inf")
+    if side == "bid" and wall_price > reference_price:
+        return float("inf")
+    if side == "ask" and wall_price < reference_price:
+        return float("inf")
+    return abs(reference_price - wall_price) / mid * 10_000
+
+
+def _is_better_event(candidate: SignalEvent, current_best: SignalEvent) -> bool:
+    if candidate.event_type != current_best.event_type:
+        return candidate.event_type == "FULL_REMOVE"
+    if candidate.old_qty != current_best.old_qty:
+        return candidate.old_qty > current_best.old_qty
+    if candidate.touch_bps != current_best.touch_bps:
+        return candidate.touch_bps < current_best.touch_bps
+    return candidate.score > current_best.score
+
+
+===== END: src/wall_detector.py =====
+
+
+===== START: src/ws_client.py =====
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+
+import websockets
+from websockets import WebSocketException
+
+from src.config import AppConfig, stream_url
+
+
+class BinanceWsClient:
+    def __init__(self, cfg: AppConfig, logger: logging.Logger) -> None:
+        self.cfg = cfg
+        self.logger = logger
+
+    async def run(self, handler, on_connect=None, on_disconnect=None) -> None:
+        delay = self.cfg.reconnect_base_delay_sec
+        url = stream_url(self.cfg)
+
+        while True:
+            try:
+                self.logger.info("Connecting to %s", url)
+                async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                    self.logger.info("WebSocket connected")
+                    if on_connect is not None:
+                        await on_connect()
+                    delay = self.cfg.reconnect_base_delay_sec
+                    async for message in ws:
+                        payload = json.loads(message)
+                        stream = payload.get("stream", "")
+                        data = payload.get("data", {})
+                        await handler(stream, data)
+            except (ConnectionError, OSError, asyncio.TimeoutError, WebSocketException, json.JSONDecodeError) as exc:
+                if on_disconnect is not None:
+                    await on_disconnect()
+                self.logger.warning("WebSocket disconnected: %s", exc)
+                self.logger.info("Reconnecting in %.1f sec", delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self.cfg.reconnect_max_delay_sec)
+
+
+===== END: src/ws_client.py =====
+
+
