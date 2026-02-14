@@ -62,3 +62,29 @@
 - В blend-режиме итог чувствителен к `base_ref_weight`; для разных рынков значение может отличаться.
 - При очень редком стакане `min_depth_sum` может часто прибивать базу к нулю — для low-liquidity рынков порог нужно снижать.
 - Raw events теперь «съедают» стенку сразу после детекта drop/remove; если нужен повторный сигнал от того же уровня, потребуется отдельная логика re-arm.
+
+## Session 2026-02-14 v3
+
+### Что сделал
+- Добавил `requirements-dev.txt` с `pytest` (и включением `requirements.txt`) для явной dev-установки тестовых зависимостей.
+- Обновил `README.md`:
+  - добавил Windows-инструкции для `PROFILE=strict` (CMD / PowerShell / Git Bash);
+  - добавил раздел `Tests` с командами установки dev-зависимостей и запуска `python -m pytest -q`;
+  - зафиксировал выбор отдельного dev-файла вместо добавления `pytest` в runtime-зависимости.
+- Обновил `scripts/live_smoke_scorer.py`:
+  - подавил шумное завершение по `CancelledError` внутри async-runner;
+  - добавил перехват `KeyboardInterrupt` в `main()`, чтобы прерывание завершалось тихо с кодом 0.
+
+### Почему
+- `pytest` нужен только для разработки/CI, поэтому вынесен в `requirements-dev.txt`, чтобы не раздувать production-окружение бота.
+- Live smoke должен быть операционно «тихим» при ручном stop/timeout; traceback на Ctrl+C мешает чистому smoke-проходу.
+
+### Команды проверки
+- `python -m venv .venv --system-site-packages`
+- `source .venv/bin/activate && python -m pytest -q`
+- `source .venv/bin/activate && python scripts/live_smoke_scorer.py --duration 2`
+- Проверка SIGINT через subprocess (send_signal SIGINT) для `scripts/live_smoke_scorer.py`.
+
+### Риски / TODO
+- В офлайн-средах `pip install -r requirements-dev.txt` может не проходить без локального индекса/кэша (это ограничение окружения, не кода).
+- При необходимости можно добавить `constraints.txt`/pin версий для полной воспроизводимости CI.

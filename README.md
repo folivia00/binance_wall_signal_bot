@@ -34,6 +34,12 @@ pip install -r requirements.txt
 python -m src.main
 ```
 
+Для более строгого профиля можно задать `PROFILE=strict`:
+
+- CMD: `set PROFILE=strict`
+- PowerShell: `$env:PROFILE="strict"`
+- Git Bash: `export PROFILE=strict`
+
 ## Конфигурация
 
 Параметры находятся в `src/config.py`:
@@ -70,4 +76,13 @@ Heartbeat теперь содержит: `round_id`, `ref_price`, `p_up/p_down`,
 
 ```bash
 python scripts/live_smoke_scorer.py --duration 90
+```
+
+## Tests
+
+Используется отдельный dev-файл зависимостей, чтобы не тянуть `pytest` в production runtime.
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
 ```

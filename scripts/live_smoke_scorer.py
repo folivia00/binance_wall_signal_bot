@@ -23,6 +23,8 @@ async def run_smoke(duration_sec: int) -> None:
 
     try:
         await asyncio.sleep(duration_sec)
+    except asyncio.CancelledError:
+        pass
     finally:
         ws_task.cancel()
         hb_task.cancel()
@@ -33,7 +35,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run live scorer smoke check")
     parser.add_argument("--duration", type=int, default=90, help="Duration in seconds")
     args = parser.parse_args()
-    asyncio.run(run_smoke(args.duration))
+    try:
+        asyncio.run(run_smoke(args.duration))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
