@@ -36,6 +36,13 @@ MAX_SHOCK = 35.0
 SHOCK_DISTANCE_BPS_CAP = 20.0
 SHOCK_MIN_AGE_SEC = 0.2
 SHOCK_AGE_FULL_SEC = 1.0
+BASE_CENTER_MODE = "blend"
+BASE_REF_WEIGHT = 0.3
+MIN_DEPTH_SUM = 1.0
+SHOCK_DISTANCE_MODE = "blend"
+SHOCK_FULL_REMOVE = 12.0
+SHOCK_MAJOR_DROP = 7.0
+SHOCK_DROP = 4.0
 
 if PROFILE == "strict":
     MIN_WALL_QTY = 7.0
@@ -46,6 +53,14 @@ if PROFILE == "strict":
     ONLY_FULL_REMOVE = True
     MIN_WALL_AGE_SEC = 0.40
     GLOBAL_COOLDOWN_SEC = 1.5
+
+    BASE_SCALE = 20.0
+    SHOCK_HALF_LIFE_SEC = 10.0
+    MIN_DEPTH_SUM = 2.0
+    BASE_REF_WEIGHT = 0.2
+    SHOCK_FULL_REMOVE = 8.0
+    SHOCK_MAJOR_DROP = 5.0
+    SHOCK_DROP = 2.0
 elif PROFILE == "balanced":
     MIN_WALL_QTY = 7.0
     MAX_WALL_DIST_BPS = 15.0
@@ -55,6 +70,14 @@ elif PROFILE == "balanced":
     ONLY_FULL_REMOVE = False
     MIN_WALL_AGE_SEC = 0.25
     GLOBAL_COOLDOWN_SEC = 1.0
+
+    BASE_SCALE = 30.0
+    SHOCK_HALF_LIFE_SEC = 15.0
+    MIN_DEPTH_SUM = 1.0
+    BASE_REF_WEIGHT = 0.3
+    SHOCK_FULL_REMOVE = 12.0
+    SHOCK_MAJOR_DROP = 7.0
+    SHOCK_DROP = 4.0
 else:
     raise ValueError(f"Unsupported PROFILE='{PROFILE}'. Use 'balanced' or 'strict'.")
 
@@ -101,6 +124,13 @@ class AppConfig:
     shock_distance_bps_cap: float = SHOCK_DISTANCE_BPS_CAP
     shock_min_age_sec: float = SHOCK_MIN_AGE_SEC
     shock_age_full_sec: float = SHOCK_AGE_FULL_SEC
+    min_depth_sum: float = MIN_DEPTH_SUM
+    base_center_mode: str = BASE_CENTER_MODE
+    base_ref_weight: float = BASE_REF_WEIGHT
+    shock_distance_mode: str = SHOCK_DISTANCE_MODE
+    shock_full_remove: float = SHOCK_FULL_REMOVE
+    shock_major_drop: float = SHOCK_MAJOR_DROP
+    shock_drop: float = SHOCK_DROP
     reconnect_base_delay_sec: float = RECONNECT_BASE_DELAY_SEC
     reconnect_max_delay_sec: float = RECONNECT_MAX_DELAY_SEC
     log_file: str = LOG_FILE
