@@ -88,3 +88,34 @@
 ### Риски / TODO
 - В офлайн-средах `pip install -r requirements-dev.txt` может не проходить без локального индекса/кэша (это ограничение окружения, не кода).
 - При необходимости можно добавить `constraints.txt`/pin версий для полной воспроизводимости CI.
+
+## Session 2026-02-15 pm-sim
+
+### Что сделал
+- Добавил новый агент `src/pm_agent.py`:
+  - состояние позиции `FLAT/LONG/SHORT`, `entry_price`, `entry_ts`;
+  - `on_tick(snapshot, score, ts) -> action` с входом и разворотом;
+  - формулу динамического порога разворота `rev_thr` от `d_bps` и `t_left_sec`;
+  - сбор метрик для summary (`num_trades`, `num_reversals`, `pseudo_pnl`, `avg_hold_time`, `win_rate_like`).
+- Добавил менеджер раундов `src/pm_round_manager.py`:
+  - фиксация `round_id` и `ref_price` каждые 15 минут;
+  - расчёт `t_left_sec`, `d_bps`, `t_frac` на каждом тике.
+- Добавил запуск симулятора `scripts/live_pm_sim.py`:
+  - live-режим поверх текущего `App + orderbook + scorer`;
+  - логирование CSV в `runs/pm_sim_<timestamp>.csv` с полями по ТЗ;
+  - summary в `runs/pm_sim_<timestamp>_summary.json`;
+  - replay-режим из существующего CSV (`--input`) для офлайн-оценки.
+- Добавил unit-тесты `tests/test_pm_agent.py`:
+  - рост `rev_thr` при увеличении дистанции и уменьшении времени;
+  - вход в long при высоком `p_up`;
+  - запрет слабого разворота под стресс-условиями;
+  - разворот при достижении порога.
+
+### Команды проверки
+- `PYTHONPATH=. pytest -q`
+- `PYTHONPATH=. python scripts/live_pm_sim.py --help`
+
+### TODO
+- Добавить интеграционный replay-тест по фиксированному логу с проверкой summary-метрик.
+- Вынести параметры `PmAgent` (entry/reverse coefficients) в конфиг/CLI для быстрой калибровки.
+- Добавить JSONL-логгер как альтернативу CSV (с переключателем в CLI).
