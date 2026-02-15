@@ -44,6 +44,19 @@ SHOCK_FULL_REMOVE = 12.0
 SHOCK_MAJOR_DROP = 7.0
 SHOCK_DROP = 4.0
 
+PM_BASE_ENTER = 52.0
+PM_BASE_EXIT = 58.0
+PM_BASE_REV = 75.0
+PM_D0_BPS = 100.0
+PM_BIAS_K = 8.0
+PM_BIAS_M = 6.0
+PM_BIAS_BMAX = 12.0
+PM_EXIT_A = 8.0
+PM_EXIT_B = 6.0
+PM_REV_A = 20.0
+PM_REV_B = 20.0
+PM_COOLDOWN_SEC = 15.0
+
 if PROFILE == "strict":
     MIN_WALL_QTY = 7.0
     MAX_WALL_DIST_BPS = 15.0
@@ -135,6 +148,18 @@ class AppConfig:
     reconnect_max_delay_sec: float = RECONNECT_MAX_DELAY_SEC
     log_file: str = LOG_FILE
     rest_depth_url: str = REST_DEPTH_URL
+    pm_base_enter: float = PM_BASE_ENTER
+    pm_base_exit: float = PM_BASE_EXIT
+    pm_base_rev: float = PM_BASE_REV
+    pm_d0_bps: float = PM_D0_BPS
+    pm_bias_k: float = PM_BIAS_K
+    pm_bias_m: float = PM_BIAS_M
+    pm_bias_bmax: float = PM_BIAS_BMAX
+    pm_exit_a: float = PM_EXIT_A
+    pm_exit_b: float = PM_EXIT_B
+    pm_rev_a: float = PM_REV_A
+    pm_rev_b: float = PM_REV_B
+    pm_cooldown_sec: float = PM_COOLDOWN_SEC
 
 
 def stream_names(cfg: AppConfig) -> list[str]:

@@ -119,3 +119,37 @@
 - Добавить интеграционный replay-тест по фиксированному логу с проверкой summary-метрик.
 - Вынести параметры `PmAgent` (entry/reverse coefficients) в конфиг/CLI для быстрой калибровки.
 - Добавить JSONL-логгер как альтернативу CSV (с переключателем в CLI).
+
+## Session 2026-02-15 pm-round-agent-v2
+
+### Что сделал
+- Переписал `src/pm_agent.py` под state-machine раундового paper-агента:
+  - состояние: `position`, `entry_price`, `entry_ts`, `cooldown_until`;
+  - `compute_thresholds(...)` с bias/exit/reverse порогами по формуле из ТЗ;
+  - `step(...)` с правилами `ENTER/EXIT/REVERSE` для `FLAT/LONG/SHORT`;
+  - закрытие сделок и PnL как сумма доходностей закрытых сделок;
+  - накопление `round_pnl`, `total_pnl`, счётчиков `trades_count/reversals_count`.
+- Добавил `src/pm_rounds.py`:
+  - вычисление `round_id = floor(ts/900)*900`;
+  - на новом раунде фиксируется `ref_price`, сбрасывается round-state агента в `FLAT` через `agent.reset_round()`;
+  - расчёт `t_left_sec`.
+- Обновил `scripts/live_pm_sim.py`:
+  - аргументы `--duration`, `--tick-sec`, `--outdir`;
+  - интеграция с существующим live WS/scorer pipeline (`App + BinanceWsClient`);
+  - тиковый CSV лог `runs/pm_sim_<timestamp>.csv` с расширенными колонками (включая thresholds, bias, d_bps, trade_pnl, running pnl);
+  - summary `runs/pm_sim_<timestamp>_summary.json` с агрегатами и `per_round`.
+- Обновил `src/config.py`:
+  - добавлены параметры PM-агента в конфиг (`pm_base_enter`, `pm_base_exit`, `pm_base_rev`, `pm_d0_bps`, bias/exit/rev коэффициенты, cooldown).
+- Переписал `tests/test_pm_agent.py` под новую логику:
+  - `test_bias_direction`;
+  - `test_rev_thr_strict_end`;
+  - `test_exit_easier_when_more_time`;
+  - `test_state_machine`.
+
+### Команды проверки
+- `PYTHONPATH=. pytest -q`
+- `PYTHONPATH=. python scripts/live_pm_sim.py --help`
+
+### Notes / TODO
+- При смене раунда открытая позиция принудительно обнуляется без искусственного close-trade; в round PnL идут только реально закрытые сделки в рамках текущего раунда.
+- При желании можно добавить опцию в CLI: закрывать позицию на границе раунда по `mid` и учитывать это как отдельный тип сделки.
