@@ -21,6 +21,7 @@ class Position(str, Enum):
 class Thresholds:
     enter_long_thr: float
     enter_short_thr: float
+    exit_thr: float
     rev_thr: float
     bias: float
     d_bps: float
@@ -250,9 +251,16 @@ class PmAgent:
             98.0,
         )
 
+        exit_thr = clamp(
+            (outcome.base_enter + phase_cfg.enter_delta) + 0.5 * bias + 4.0 * (1.0 - t_frac),
+            50.0,
+            95.0,
+        )
+
         return Thresholds(
             enter_long_thr=clamp(enter_long_thr, 0.0, 100.0),
             enter_short_thr=clamp(enter_short_thr, 0.0, 100.0),
+            exit_thr=exit_thr,
             rev_thr=need,
             bias=bias,
             d_bps=d_bps,
@@ -321,6 +329,9 @@ class PmAgent:
                 self.distance_at_reverse = thresholds.d_signed_bps
                 self.p_up_at_reverse = p_up
                 return StepResult("REVERSE_TO_SHORT", "reverse_criteria_met", thresholds, trade_close, p_up, phase)
+            if p_down >= thresholds.exit_thr and t_left > outcome.min_reverse_tleft:
+                trade_close = self._close(mid, ts, kind="EXIT_LONG")
+                return StepResult("EXIT_TO_FLAT", "exit_criteria_met", thresholds, trade_close, p_up, phase)
             return StepResult("HOLD", "hold_long", thresholds, None, p_up, phase)
 
         if (
@@ -336,6 +347,9 @@ class PmAgent:
             self.distance_at_reverse = thresholds.d_signed_bps
             self.p_up_at_reverse = p_up
             return StepResult("REVERSE_TO_LONG", "reverse_criteria_met", thresholds, trade_close, p_up, phase)
+        if p_up >= thresholds.exit_thr and t_left > outcome.min_reverse_tleft:
+            trade_close = self._close(mid, ts, kind="EXIT_SHORT")
+            return StepResult("EXIT_TO_FLAT", "exit_criteria_met", thresholds, trade_close, p_up, phase)
         return StepResult("HOLD", "hold_short", thresholds, None, p_up, phase)
 
     def _open(self, side: Position, price: float, ts: float) -> None:
@@ -382,6 +396,7 @@ class PmAgent:
             "bias": result.thresholds.bias,
             "enter_long_thr": result.thresholds.enter_long_thr,
             "enter_short_thr": result.thresholds.enter_short_thr,
+            "exit_thr": result.thresholds.exit_thr,
             "rev_need": result.thresholds.rev_need,
             "position": self.position.value,
             "action": result.action,

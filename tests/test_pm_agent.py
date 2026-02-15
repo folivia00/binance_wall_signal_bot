@@ -49,8 +49,8 @@ def test_max_one_reverse_per_round() -> None:
     assert r1.action == "REVERSE_TO_SHORT"
 
     r2 = agent.step(30.0, 101.5, 101.4, 101.6, 100.0, 650.0, 99.0, 0.0, 99.0, 0.0)
-    assert r2.action == "HOLD"
-    assert agent.position == Position.SHORT
+    assert r2.action == "EXIT_TO_FLAT"
+    assert agent.position == Position.FLAT
 
 
 def test_summary_correct_calculation() -> None:
