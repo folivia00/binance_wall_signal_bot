@@ -1,0 +1,31 @@
+base_enter: 54.0
+base_rev: 82.0
+K: 8.0
+M: 6.0
+A: 12.0
+B: 10.0
+D0: 100.0
+Bmax: 12.0
+MIN_EDGE: 0.75
+MIN_REVERSE_TLEFT: 75
+NO_ENTRY_LAST_SECONDS: 50
+MAX_ENTRIES_PER_ROUND: 1
+MAX_REVERSALS_PER_ROUND: 1
+ALLOW_EXIT_FLAT: false
+ALLOW_STAY_FLAT: true
+phase_modifiers:
+  early:
+    enter_delta: 0.0
+    rev_delta: 0.0
+    detector_weights:
+      orderbook: 1.0
+  mid:
+    enter_delta: -0.5
+    rev_delta: 1.0
+    detector_weights:
+      orderbook: 1.0
+  end:
+    enter_delta: 1.0
+    rev_delta: 2.0
+    detector_weights:
+      orderbook: 1.0

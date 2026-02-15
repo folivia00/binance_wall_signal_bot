@@ -13,6 +13,9 @@ ENABLE_AGG_TRADE = False
 
 PROFILE = os.getenv("PROFILE", "balanced").strip().lower()
 
+AGENT_MODE = os.getenv("AGENT_MODE", "outcome").strip().lower()
+OUTCOME_CONFIG_PATH = os.getenv("OUTCOME_CONFIG_PATH", "configs/outcome.yaml")
+
 N_LEVELS = 100
 WALL_MULT = 5.0
 IMB_THR = 0.12
@@ -126,6 +129,8 @@ class AppConfig:
     min_wall_age_sec: float = MIN_WALL_AGE_SEC
     global_cooldown_sec: float = GLOBAL_COOLDOWN_SEC
     profile: str = PROFILE
+    agent_mode: str = AGENT_MODE
+    outcome_config_path: str = OUTCOME_CONFIG_PATH
     snapshot_limit: int = SNAPSHOT_LIMIT
     round_interval_sec: int = ROUND_INTERVAL_SEC
     reference_source: str = REFERENCE_SOURCE
