@@ -1,61 +1,105 @@
 from __future__ import annotations
 
-from src.pm_agent import PmAgent, PmTickSnapshot, RevThresholdConfig, calc_rev_threshold
-from src.polymarket_scorer import ScoreSnapshot
+from src.config import AppConfig
+from src.pm_agent import PmAgent, Position
 
 
-def _score(p_up: float) -> ScoreSnapshot:
-    return ScoreSnapshot(
-        p_up=p_up,
-        p_down=100.0 - p_up,
+def _agent() -> PmAgent:
+    return PmAgent(AppConfig())
+
+
+def test_bias_direction() -> None:
+    agent = _agent()
+
+    up = agent.compute_thresholds(mid=101.0, ref=100.0, t_left=600.0, p_up=50.0)
+    down = agent.compute_thresholds(mid=99.0, ref=100.0, t_left=600.0, p_up=50.0)
+
+    assert up.enter_long_thr < up.enter_short_thr
+    assert down.enter_short_thr < down.enter_long_thr
+
+
+def test_rev_thr_strict_end() -> None:
+    agent = _agent()
+    d_bps = 150.0
+    ref = 100.0
+    mid = ref * (1.0 + d_bps / 10_000.0)
+
+    thr = agent.compute_thresholds(mid=mid, ref=ref, t_left=120.0, p_up=50.0)
+
+    assert thr.rev_thr >= 90.0
+
+
+def test_exit_easier_when_more_time() -> None:
+    agent = _agent()
+    ref = 100.0
+    mid = 101.5
+
+    thr_more_time = agent.compute_thresholds(mid=mid, ref=ref, t_left=600.0, p_up=50.0)
+    thr_less_time = agent.compute_thresholds(mid=mid, ref=ref, t_left=60.0, p_up=50.0)
+
+    assert thr_more_time.exit_thr < thr_less_time.exit_thr
+
+
+def test_state_machine() -> None:
+    agent = _agent()
+
+    enter = agent.step(
+        ts=10.0,
+        mid=100.0,
+        best_bid=99.9,
+        best_ask=100.1,
+        ref=100.0,
+        t_left=700.0,
+        p_up=70.0,
         base_raw=0.0,
-        base_p_up=p_up,
-        shock_value=0.0,
-        ref_price=0.0,
-        round_id="",
-        pressure_breakdown=[],
+        base_p_up=50.0,
+        shock=0.0,
     )
+    assert enter.action == "ENTER_LONG"
+    assert agent.position == Position.LONG
 
+    moderate = agent.step(
+        ts=20.0,
+        mid=100.2,
+        best_bid=100.1,
+        best_ask=100.3,
+        ref=100.0,
+        t_left=700.0,
+        p_up=40.0,
+        base_raw=0.0,
+        base_p_up=50.0,
+        shock=0.0,
+    )
+    assert moderate.action == "EXIT_LONG"
+    assert moderate.trade_close is not None
+    assert agent.position == Position.FLAT
 
-def _snap(t_left_sec: float = 900.0, d_bps: float = 0.0, mid: float = 100.0) -> PmTickSnapshot:
-    return PmTickSnapshot(round_id="0", ref_price=100.0, t_left_sec=t_left_sec, d_bps=d_bps, t_frac=t_left_sec / 900.0, mid=mid)
+    agent.step(
+        ts=40.0,
+        mid=100.0,
+        best_bid=99.9,
+        best_ask=100.1,
+        ref=100.0,
+        t_left=700.0,
+        p_up=70.0,
+        base_raw=0.0,
+        base_p_up=50.0,
+        shock=0.0,
+    )
+    assert agent.position == Position.LONG
 
-
-def test_rev_threshold_grows_with_distance_and_time_pressure() -> None:
-    cfg = RevThresholdConfig(base_rev_thr=60.0, distance_coef=10.0, distance_norm_bps=10.0, time_coef=12.0)
-    near_early = calc_rev_threshold(d_bps=1.0, t_left_sec=900.0, cfg=cfg)
-    far_early = calc_rev_threshold(d_bps=20.0, t_left_sec=900.0, cfg=cfg)
-    near_late = calc_rev_threshold(d_bps=1.0, t_left_sec=30.0, cfg=cfg)
-
-    assert far_early > near_early
-    assert near_late > near_early
-
-
-def test_enter_long_when_probability_high() -> None:
-    agent = PmAgent(entry_long_thr=60.0, entry_short_thr=40.0)
-    action = agent.on_tick(_snap(), _score(72.0), ts=1.0)
-
-    assert action.name == "ENTER_LONG"
-    assert agent.position.value == "LONG"
-
-
-def test_no_reverse_when_signal_not_strong_enough_under_stress() -> None:
-    agent = PmAgent(entry_long_thr=60.0, entry_short_thr=40.0)
-    agent.on_tick(_snap(), _score(75.0), ts=1.0)
-
-    stressed = _snap(t_left_sec=30.0, d_bps=35.0, mid=99.8)
-    action = agent.on_tick(stressed, _score(20.0), ts=2.0)
-
-    assert action.name == "HOLD"
-    assert agent.position.value == "LONG"
-
-
-def test_reverse_triggers_when_threshold_is_met() -> None:
-    agent = PmAgent(entry_long_thr=60.0, entry_short_thr=40.0)
-    agent.on_tick(_snap(), _score(75.0), ts=1.0)
-
-    relaxed = _snap(t_left_sec=850.0, d_bps=0.5, mid=99.5)
-    action = agent.on_tick(relaxed, _score(18.0), ts=2.0)
-
-    assert action.name == "REVERSE_TO_SHORT"
-    assert agent.position.value == "SHORT"
+    extreme = agent.step(
+        ts=50.0,
+        mid=99.7,
+        best_bid=99.6,
+        best_ask=99.8,
+        ref=100.0,
+        t_left=700.0,
+        p_up=5.0,
+        base_raw=0.0,
+        base_p_up=50.0,
+        shock=0.0,
+    )
+    assert extreme.action == "REVERSE_TO_SHORT"
+    assert extreme.trade_close is not None
+    assert agent.position == Position.SHORT
